@@ -3,5 +3,17 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
-# Raw data is too large for GitHub (votes CSV is 368 MB); rebuild with `uv run python un_data.py`
-data/
+# Data: the raw votes CSV is 367 MB (over GitHub's 100 MB limit), so only the
+# gzipped copy (data/2026_10_15_votes_ga.csv.gz) is tracked. Generated files are
+# rebuilt with `uv run python un_data.py`.
+data/2026_10_15_votes_ga.csv
+data/processed/
+data/embeddings/
+data/*.code-workspace
+
+# macOS metadata
+.DS_Store
+._*
+.Rhistory
+.Rapp.history
+.DS_Store*

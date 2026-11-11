@@ -67,7 +67,8 @@ def load_speeches():
 
 
 def load_votes():
-    v = pd.read_csv(DATA / "2026_10_15_votes_ga.csv", dtype=str)
+    # Tracked in git as .csv.gz (the raw CSV is over GitHub's 100 MB file limit).
+    v = pd.read_csv(DATA / "2026_10_15_votes_ga.csv.gz", dtype=str)
     # A few rows are missing the session; recover it from the resolution symbol.
     from_symbol = v["resolution"].str.extract(r"^A/RES/(\d+)/", expand=False)
     v["session"] = v["session"].fillna(from_symbol)
