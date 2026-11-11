@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Raw data is too large for GitHub (votes CSV is 368 MB); rebuild with `uv run python un_data.py`
+data/

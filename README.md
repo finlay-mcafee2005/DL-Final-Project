@@ -127,17 +127,19 @@ The headline comparison is **`contrastive_plus_history` vs. `last_session_vote`*
 
 ## Getting started
 
+Requires [uv](https://docs.astral.sh/uv/). The raw data goes in `data/` (not tracked in git).
+
 ```bash
 git clone https://github.com/finlay-mcafee2005/DL-Final-Project.git
 cd DL-Final-Project
-pip install -r requirements.txt
+uv sync                              # create .venv and install locked dependencies
 
-python un_data.py                    # download, join, and split the data
-python embed_cache.py                # cache sentence embeddings (run once)
-python comparison.py                 # run the baselines
-python un_contrastive.py             # run every experiment
-python un_contrastive.py --experiment contrastive_relu_adam   # run just one
-python -m pytest test_un.py -v       # run the tests
+uv run python un_data.py             # join speeches with votes, 80/20 split -> data/processed/
+uv run python embed_cache.py         # cache sentence embeddings (run once)
+uv run python comparison.py          # run the baselines
+uv run python un_contrastive.py      # run every experiment
+uv run python un_contrastive.py --experiment contrastive_relu_adam   # run just one
+uv run pytest test_un.py -v          # run the tests
 ```
 
 Logging goes to CSV in `results/` by default. Weights & Biases is optional (`--wandb`).
