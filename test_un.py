@@ -8,9 +8,11 @@ import json
 
 import numpy as np
 import pytest
+import torch
 
 from comparison import EVAL_SPLITS, always_yes, best_threshold, last_session_vote, scores, target
 from embed_cache import DEFAULT_MODEL, cache_dir, chunk_text, load_embeddings
+from un_contrastive import EXPERIMENTS, history_onehot, train
 from un_data import (ISSUES, OUT, TEST_START, VAL_START, VOTE_RECORD_GROUPS, load_processed,
                      load_split, vote_records)
 
@@ -169,3 +171,43 @@ def test_one_vote_record_per_speech_with_valid_shares(splits, split):
         total = V[[f"{group}_{v}" for v in "YNA"]].sum(axis=1)
         assert (np.isclose(total, 1) | np.isclose(total, 0)).all()
     assert np.allclose(V[["all_Y", "all_N", "all_A"]].sum(axis=1), 1)
+
+
+# ---------------------------------------------------------------- Stage 2
+
+def test_history_onehot_marks_exactly_one_column():
+    h = history_onehot(["Y", "N", "A", None, np.nan])
+    assert h.shape == (5, 4)
+    assert (h.sum(axis=1) == 1).all()
+    assert h[:, 3].tolist() == [0, 0, 0, 1, 1]  # last column = no match
+
+
+@pytest.mark.parametrize("name", list(EXPERIMENTS))
+def test_experiments_output_one_probability_per_vote(name):
+    fn, _ = EXPERIMENTS[name]
+    model, loss_fn, optimizer = fn(20)
+    p = model(torch.randn(8, 20))
+    assert p.shape == (8,)
+    assert ((p >= 0) & (p <= 1)).all()
+    assert isinstance(loss_fn, torch.nn.BCELoss)
+
+
+class _TinySplit:
+    """Stand-in for VoteData: y = 1 when the first feature is positive."""
+    def __init__(self, n, seed):
+        g = torch.Generator().manual_seed(seed)
+        self.x = torch.randn(n, 6, generator=g)
+        self.y = (self.x[:, 0] > 0).float()
+    def __len__(self):
+        return len(self.y)
+    def features(self, idx, inputs):
+        return self.x[idx]
+
+
+def test_train_learns_a_simple_rule():
+    data = {"train": _TinySplit(2000, 0), "val": _TinySplit(500, 1)}
+    model, loss_fn, optimizer = EXPERIMENTS["probe_no_contrastive"][0](6)
+    model, hist = train(model, loss_fn, optimizer, data, inputs=None, epochs=5,
+                        batch_size=64, device=torch.device("cpu"), log=lambda *_: None)
+    assert hist["val_macro_f1"].max() > 0.9
+    assert hist["train_loss"].iloc[-1] < hist["train_loss"].iloc[0]
