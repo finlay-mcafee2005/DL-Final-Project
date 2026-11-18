@@ -1,36 +1,56 @@
-"""Experiment functions, the shared train() loop, and logging.
+"""Experiment functions, the shared training loops, and logging.
 
 Each experiment is a function that returns (model, loss_fn, optimizer), built from
-nn.Sequential, and every one runs through the same train() loop (the Lab 3 setup).
+nn.Sequential (the Lab 3 setup). Stage 1 experiments share train_contrastive(); Stage 2
+experiments share train().
 
-Stage 2, vote prediction. The model reads one (country-session, resolution) pair and
-outputs P(Yes) through a final sigmoid, trained with nn.BCELoss. Inputs come from:
+Stage 1, contrastive pretraining (CLIP-style). Two projection heads map a country's
+speech embedding (384 numbers) and its vote record for the same session (24 numbers,
+un_data.vote_records) into one 128-dimensional space. In a batch of B country-sessions
+the B x B cosine-similarity matrix should peak on the diagonal; the loss is
+nn.CrossEntropyLoss over that matrix in both directions. Every batch holds speeches
+from a single session, so the model has to match on positions, not on era (Cold War
+speeches vs. recent ones would otherwise be trivially easy to tell apart).
+
+    contrastive_relu_adam         reference: 2-layer ReLU heads, Adam, temperature 0.07
+    contrastive_gelu_adam         ReLU -> GELU
+    contrastive_relu_sgd          Adam -> SGD with momentum
+    contrastive_relu_adam_t0.05   temperature 0.07 -> 0.05
+    contrastive_relu_adam_dropout dropout 0.2 in the heads
+
+Scored by retrieval within each session: for each speech, is its own country's vote
+record the closest (top-1) or among the 10 closest (top-10)? Chance is 1/n and 10/n
+for a session of n countries, and is reported alongside.
+
+Stage 2, vote prediction. A head reads one (country-session, resolution) pair and
+outputs P(Yes) through a final sigmoid, trained with nn.BCELoss. Inputs:
 
     speech       cached speech embedding (frozen sentence encoder, 384 numbers)
+    speech_proj  the speech passed through a trained, frozen Stage 1 speech head (128)
     resolution   cached resolution embedding (384 numbers)
     history      the country's vote on the matching resolution last session,
                  one-hot over Yes / No / Abstain / no match (4 numbers)
 
-Experiments (each changes one thing from another):
+    probe_no_contrastive      speech + resolution
+    history_mlp               resolution + history         (no speech)
+    probe_plus_history        speech + resolution + history
+    contrastive_probe         speech_proj + resolution
+    contrastive_plus_history  speech_proj + resolution + history   (the headline model)
 
-    probe_no_contrastive   speech + resolution          raw frozen embeddings, no Stage 1
-    history_mlp            resolution + history         no speech: history alone, learned
-    probe_plus_history     speech + resolution + history
+contrastive_* vs probe_* asks whether Stage 1 helps; *_plus_history vs history_mlp asks
+whether the speech adds anything once last session's vote is known.
 
-probe_plus_history vs history_mlp is the main question in miniature: does the speech
-add anything once the model already knows last session's vote? Stage 1 (contrastive)
-experiments plug in here too, through the same train() loop.
-
-Training: Adam, batches of 1,024 votes, up to --epochs epochs, keeping the weights
-from the epoch with the best val macro-F1 (early stopping with --patience). As in
-comparison.py, the Yes/No cut-off is tuned on val and then applied unchanged to test.
+Stage 2 training: Adam, batches of 1,024 votes, keeping the epoch with the best val
+macro-F1 (early stopping with --patience). As in comparison.py, the Yes/No cut-off is
+tuned on val and then applied unchanged to test.
 
 Usage:
-    uv run python un_contrastive.py                                   # every experiment
-    uv run python un_contrastive.py --experiment probe_no_contrastive # just one
-    uv run python un_contrastive.py --epochs 5                        # quicker
-Writes results/<experiment>.csv (per-epoch history) and results/summary.csv (final
-scores, same columns as results/baselines.csv).
+    uv run python un_contrastive.py                                      # everything
+    uv run python un_contrastive.py --experiment contrastive_relu_adam   # just one
+    uv run python un_contrastive.py --experiment contrastive_plus_history \\
+        --stage1 contrastive_gelu_adam      # Stage 2 on top of a different Stage 1
+Writes results/<experiment>.csv (per-epoch history), results/summary.csv (Stage 2
+scores, same columns as results/baselines.csv) and results/retrieval.csv (Stage 1).
 """
 
 import argparse
@@ -40,20 +60,23 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 from torch import nn
 
-from comparison import EVAL_SPLITS, best_threshold, scores, target
+from comparison import EVAL_SPLITS, best_threshold, scores, subsets, target
 from embed_cache import load_embeddings
-from un_data import SEED, load_split
+from un_data import SEED, load_split, vote_records
 
 RESULTS = Path(__file__).parent / "results"
 HISTORY_CODES = ["Y", "N", "A"]  # plus a fourth "no match" column
+SPLITS = ["train", *EVAL_SPLITS]
 
 
 # ---------------------------------------------------------------- data
 
 class VoteData:
-    """One split as index arrays into the embedding tables, plus history and target.
+    """Stage 2: one split as index arrays into the embedding tables, plus history and
+    target.
 
     Embeddings are gathered per batch rather than copied per vote: the train split has
     534k votes, and a full copy of their features would take ~1.6 GB.
@@ -61,23 +84,51 @@ class VoteData:
 
     def __init__(self, votes, tables):
         S, s_row, R, r_row = tables
-        self.S, self.R = S, R
+        self.S, self.R, self.P = S, R, None  # P: Stage 1 projections, set by run()
         self.speech = torch.as_tensor(s_row.get_indexer(votes["speech_id"]), dtype=torch.long)
         self.res = torch.as_tensor(r_row.get_indexer(votes["undl_id"]), dtype=torch.long)
         if (self.speech < 0).any() or (self.res < 0).any():
             raise KeyError("some votes have no cached embedding; run embed_cache.py")
         self.history = torch.as_tensor(history_onehot(votes["last_vote"]))
         self.y = torch.as_tensor(target(votes), dtype=torch.float32)
-        self.contested = votes["contested"].to_numpy(bool)
+        self.subsets = subsets(votes)  # all / contested / no_history masks
 
     def __len__(self):
         return len(self.y)
 
     def features(self, idx, inputs):
         parts = {"speech": lambda: self.S[self.speech[idx]],
+                 "speech_proj": lambda: self.P[self.speech[idx]],
                  "resolution": lambda: self.R[self.res[idx]],
                  "history": lambda: self.history[idx]}
         return torch.cat([parts[name]() for name in inputs], dim=1)
+
+
+class PairData:
+    """Stage 1: each speech in a split paired with its vote record, grouped by session."""
+
+    def __init__(self, speeches, votes, tables):
+        S, s_row = tables[0], tables[1]
+        V = vote_records(votes)
+        self.S = S[torch.as_tensor(s_row.get_indexer(V.index), dtype=torch.long)]
+        self.V = torch.tensor(V.to_numpy())
+        session = speeches.set_index("speech_id").loc[V.index, "session"].to_numpy()
+        self.sessions = [torch.as_tensor(np.flatnonzero(session == s)) for s in np.unique(session)]
+
+    def __len__(self):
+        return len(self.V)
+
+    def batches(self, gen=None, max_batch=256):
+        """Index batches, each from one session. Shuffled when a generator is given."""
+        order = (torch.randperm(len(self.sessions), generator=gen).tolist() if gen is not None
+                 else range(len(self.sessions)))
+        for i in order:
+            idx = self.sessions[i]
+            if gen is not None:
+                idx = idx[torch.randperm(len(idx), generator=gen)]
+            for batch in idx.split(max_batch):
+                if len(batch) > 1:  # a batch of one has nothing to contrast with
+                    yield batch
 
 
 def history_onehot(last_vote):
@@ -95,17 +146,78 @@ def load_tables():
 
 
 def load_data():
+    """(tables, {split: VoteData}, {split: PairData})."""
     tables = load_tables()
-    return {s: VoteData(load_split(s)[1], tables) for s in ["train", *EVAL_SPLITS]}
+    splits = {s: load_split(s) for s in SPLITS}
+    votes = {s: VoteData(v, tables) for s, (_, v) in splits.items()}
+    pairs = {s: PairData(sp, v, tables) for s, (sp, v) in splits.items()}
+    return tables, votes, pairs
 
 
 def input_dim(data, inputs):
     return data.features(torch.arange(1), inputs).shape[1]
 
 
-# ---------------------------------------------------------------- experiments
-# Each takes the input size and returns (model, loss_fn, optimizer). The INPUTS table
-# below says which features each one reads.
+# ---------------------------------------------------------------- Stage 1 experiments
+# Each takes the speech and vote-record sizes and returns (model, loss_fn, optimizer).
+# The model is an nn.ModuleDict with a "speech" and a "votes" head; its temperature is
+# stored on the model.
+
+def contrastive_heads(speech_dim, vote_dim, proj_dim=128, act=nn.ReLU, dropout=0.0,
+                      temperature=0.07):
+    def head(in_dim, hidden):
+        layers = [nn.Linear(in_dim, hidden), act()]
+        if dropout:
+            layers.append(nn.Dropout(dropout))
+        return nn.Sequential(*layers, nn.Linear(hidden, proj_dim))
+    model = nn.ModuleDict({"speech": head(speech_dim, 256), "votes": head(vote_dim, 64)})
+    model.temperature = temperature
+    return model
+
+
+def contrastive_relu_adam(speech_dim, vote_dim, proj_dim=128):
+    """Contrastive pretraining with 2-layer ReLU heads and Adam: the reference setup."""
+    model = contrastive_heads(speech_dim, vote_dim, proj_dim)
+    return model, nn.CrossEntropyLoss(), torch.optim.Adam(model.parameters(), lr=1e-3)
+
+
+def contrastive_gelu_adam(speech_dim, vote_dim, proj_dim=128):
+    """ReLU -> GELU: does the activation matter?"""
+    model = contrastive_heads(speech_dim, vote_dim, proj_dim, act=nn.GELU)
+    return model, nn.CrossEntropyLoss(), torch.optim.Adam(model.parameters(), lr=1e-3)
+
+
+def contrastive_relu_sgd(speech_dim, vote_dim, proj_dim=128):
+    """Adam -> SGD with momentum: does the optimizer matter?"""
+    model = contrastive_heads(speech_dim, vote_dim, proj_dim)
+    return model, nn.CrossEntropyLoss(), torch.optim.SGD(model.parameters(), lr=0.05,
+                                                         momentum=0.9)
+
+
+def contrastive_relu_adam_t005(speech_dim, vote_dim, proj_dim=128):
+    """Temperature 0.07 -> 0.05: how sharp should the contrast be?"""
+    model = contrastive_heads(speech_dim, vote_dim, proj_dim, temperature=0.05)
+    return model, nn.CrossEntropyLoss(), torch.optim.Adam(model.parameters(), lr=1e-3)
+
+
+def contrastive_relu_adam_dropout(speech_dim, vote_dim, proj_dim=128):
+    """Dropout 0.2 in both heads: are we overfitting?"""
+    model = contrastive_heads(speech_dim, vote_dim, proj_dim, dropout=0.2)
+    return model, nn.CrossEntropyLoss(), torch.optim.Adam(model.parameters(), lr=1e-3)
+
+
+STAGE1 = {
+    "contrastive_relu_adam": contrastive_relu_adam,
+    "contrastive_gelu_adam": contrastive_gelu_adam,
+    "contrastive_relu_sgd": contrastive_relu_sgd,
+    "contrastive_relu_adam_t0.05": contrastive_relu_adam_t005,
+    "contrastive_relu_adam_dropout": contrastive_relu_adam_dropout,
+}
+
+
+# ---------------------------------------------------------------- Stage 2 experiments
+# Each takes the input size and returns (model, loss_fn, optimizer). The EXPERIMENTS
+# table says which features each one reads.
 
 def prediction_head(in_dim):
     """Stage 2 head: two ReLU layers, then a sigmoid giving P(Yes)."""
@@ -132,14 +244,119 @@ def probe_plus_history(in_dim):
     return model, nn.BCELoss(), torch.optim.Adam(model.parameters(), lr=1e-3)
 
 
+def contrastive_probe(in_dim):
+    """Same head on the frozen Stage 1 speech projection + resolution."""
+    model = prediction_head(in_dim)
+    return model, nn.BCELoss(), torch.optim.Adam(model.parameters(), lr=1e-3)
+
+
+def contrastive_plus_history(in_dim):
+    """Same head on Stage 1 speech projection + resolution + last-session vote."""
+    model = prediction_head(in_dim)
+    return model, nn.BCELoss(), torch.optim.Adam(model.parameters(), lr=1e-3)
+
+
 EXPERIMENTS = {
     "probe_no_contrastive": (probe_no_contrastive, ["speech", "resolution"]),
     "history_mlp": (history_mlp, ["resolution", "history"]),
     "probe_plus_history": (probe_plus_history, ["speech", "resolution", "history"]),
+    "contrastive_probe": (contrastive_probe, ["speech_proj", "resolution"]),
+    "contrastive_plus_history": (contrastive_plus_history,
+                                 ["speech_proj", "resolution", "history"]),
 }
 
 
-# ---------------------------------------------------------------- training
+# ---------------------------------------------------------------- Stage 1 training
+
+def clip_logits(model, s, v):
+    """Cosine similarity of every speech to every vote record, over the temperature."""
+    a = F.normalize(model["speech"](s), dim=1)
+    b = F.normalize(model["votes"](v), dim=1)
+    return a @ b.T / model.temperature
+
+
+def clip_loss(loss_fn, logits):
+    """Cross-entropy in both directions: speech -> record and record -> speech."""
+    labels = torch.arange(len(logits), device=logits.device)
+    return (loss_fn(logits, labels) + loss_fn(logits.T, labels)) / 2
+
+
+@torch.no_grad()
+def retrieval(model, loss_fn, pairs, device):
+    """Within-session retrieval of each speech's own vote record, plus mean loss."""
+    model.eval()
+    n = top1 = top10 = chance1 = chance10 = loss = 0.0
+    batches = 0
+    for idx in pairs.batches(max_batch=10_000):  # whole sessions, unshuffled
+        logits = clip_logits(model, pairs.S[idx].to(device), pairs.V[idx].to(device))
+        loss += clip_loss(loss_fn, logits).item()
+        batches += 1
+        rank = (logits > logits.diag()[:, None]).sum(dim=1)  # 0 = own record is closest
+        k = len(idx)
+        n += k
+        top1 += (rank == 0).sum().item()
+        top10 += (rank < 10).sum().item()
+        chance1 += 1
+        chance10 += min(10, k)
+    return {"loss": loss / batches, "top1": top1 / n, "top10": top10 / n,
+            "chance_top1": chance1 / n, "chance_top10": chance10 / n}
+
+
+def train_contrastive(model, loss_fn, optimizer, pairs, epochs=300, patience=30,
+                      max_batch=256, device=None, log=print, log_every=25):
+    """Stage 1 training loop. Returns (best model, per-epoch history DataFrame).
+
+    Each epoch visits every training session once, in random order (one batch per
+    session). Keeps the weights with the lowest val loss and stops after `patience`
+    epochs without improvement.
+    """
+    device = device or pick_device()
+    model.to(device)
+    gen = torch.Generator().manual_seed(SEED)
+    history, best, best_state, stale = [], float("inf"), None, 0
+
+    for epoch in range(1, epochs + 1):
+        model.train()
+        total, batches = 0.0, 0
+        for idx in pairs["train"].batches(gen, max_batch):
+            logits = clip_logits(model, pairs["train"].S[idx].to(device),
+                                 pairs["train"].V[idx].to(device))
+            loss = clip_loss(loss_fn, logits)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            total += loss.item()
+            batches += 1
+
+        val = retrieval(model, loss_fn, pairs["val"], device)
+        history.append({"epoch": epoch, "train_loss": total / batches, "val_loss": val["loss"],
+                        "val_top1": val["top1"], "val_top10": val["top10"]})
+        if epoch == 1 or epoch % log_every == 0:
+            log(f"  epoch {epoch:3d}  train loss {total / batches:.3f}  val loss {val['loss']:.3f}"
+                f"  val top-1 {val['top1']:.3f}  top-10 {val['top10']:.3f}"
+                f"  (chance {val['chance_top1']:.3f} / {val['chance_top10']:.3f})")
+
+        if val["loss"] < best:
+            best, stale = val["loss"], 0
+            best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+        else:
+            stale += 1
+            if stale >= patience:
+                log(f"  no val improvement for {patience} epochs, stopping at epoch {epoch}")
+                break
+
+    model.load_state_dict(best_state)
+    return model, pd.DataFrame(history)
+
+
+@torch.no_grad()
+def project_speeches(model, S, device):
+    """Frozen Stage 1 speech head applied to every cached speech (L2-normalised)."""
+    model.eval()
+    return F.normalize(model["speech"](S.to(device)), dim=1).cpu()
+
+
+# ---------------------------------------------------------------- Stage 2 training
 
 def pick_device(name=None):
     if name:
@@ -161,7 +378,7 @@ def predict(model, data, inputs, device, batch_size=8192):
 
 def train(model, loss_fn, optimizer, data, inputs, epochs=20, batch_size=1024,
           patience=3, device=None, log=print):
-    """Shared training loop. Returns (best model, per-epoch history DataFrame).
+    """Stage 2 training loop. Returns (best model, per-epoch history DataFrame).
 
     Each epoch: one pass over shuffled training votes, then val loss and val macro-F1
     (threshold tuned on val). Keeps the weights from the best val macro-F1 epoch and
@@ -212,65 +429,113 @@ def train(model, loss_fn, optimizer, data, inputs, epochs=20, batch_size=1024,
 
 
 def evaluate(name, model, data, inputs, device, seconds):
-    """Final scores in the same layout as results/baselines.csv."""
+    """Final Stage 2 scores in the same layout as results/baselines.csv."""
     probs = {s: predict(model, data[s], inputs, device) for s in EVAL_SPLITS}
     threshold = best_threshold(data["val"].y.numpy(), probs["val"])
     rows = []
     for split in EVAL_SPLITS:
         d = data[split]
         y = d.y.numpy().astype(np.int8)
-        for subset, mask in [("all", np.ones(len(d), bool)), ("contested", d.contested)]:
+        for subset, mask in d.subsets:
             rows.append({"baseline": name, "split": split, "subset": subset,
                          "n": int(mask.sum()), **scores(y[mask], probs[split][mask], threshold),
                          "threshold": round(threshold, 4), "seconds": round(seconds, 1)})
     return rows
 
 
-def run(names, epochs=20, batch_size=1024, patience=3, device=None):
+# ---------------------------------------------------------------- run
+
+def run_stage1(name, pairs, device, epochs, patience):
+    print(f"running {name}  (Stage 1, contrastive)")
     torch.manual_seed(SEED)
+    t0 = time.time()
+    model, loss_fn, optimizer = STAGE1[name](pairs["train"].S.shape[1], pairs["train"].V.shape[1])
+    model, hist = train_contrastive(model, loss_fn, optimizer, pairs, epochs, patience,
+                                    device=device)
+    hist.to_csv(RESULTS / f"{name}.csv", index=False)
+    rows = [{"experiment": name, "split": s, **retrieval(model, loss_fn, pairs[s], device),
+             "epochs": len(hist), "seconds": round(time.time() - t0, 1)} for s in EVAL_SPLITS]
+    return model, rows
+
+
+def run(names, epochs=20, batch_size=1024, patience=3, device=None,
+        stage1="contrastive_relu_adam", stage1_epochs=300, stage1_patience=30):
     device = pick_device(device)
     print(f"device: {device}")
-    data = load_data()
+    tables, data, pairs = load_data()
     RESULTS.mkdir(exist_ok=True)
-    rows = []
+    stage2_rows, stage1_rows, trained = [], [], {}
+
     for name in names:
+        if name in STAGE1:
+            trained[name], rows = run_stage1(name, pairs, device, stage1_epochs, stage1_patience)
+            stage1_rows += rows
+            continue
+
         fn, inputs = EXPERIMENTS[name]
-        print(f"running {name}  (inputs: {', '.join(inputs)})")
+        if "speech_proj" in inputs:
+            if stage1 not in trained:
+                trained[stage1], rows = run_stage1(stage1, pairs, device, stage1_epochs,
+                                                   stage1_patience)
+                stage1_rows += rows
+            P = project_speeches(trained[stage1], tables[0], device)
+            for d in data.values():
+                d.P = P
+        print(f"running {name}  (Stage 2, inputs: {', '.join(inputs)}"
+              + (f"; Stage 1 = {stage1})" if "speech_proj" in inputs else ")"))
         torch.manual_seed(SEED)
         t0 = time.time()
         model, loss_fn, optimizer = fn(input_dim(data["train"], inputs))
         model, hist = train(model, loss_fn, optimizer, data, inputs, epochs, batch_size,
                             patience, device)
         hist.to_csv(RESULTS / f"{name}.csv", index=False)
-        rows += evaluate(name, model, data, inputs, device, time.time() - t0)
-    return pd.DataFrame(rows)
+        stage2_rows += evaluate(name, model, data, inputs, device, time.time() - t0)
+
+    return pd.DataFrame(stage2_rows), pd.DataFrame(stage1_rows)
+
+
+def save(results, path, key):
+    """Write results, keeping earlier rows for experiments not re-run."""
+    if path.exists() and len(results):
+        old = pd.read_csv(path)
+        results = pd.concat([old[~old[key].isin(results[key])], results], ignore_index=True)
+    if len(results):
+        results.to_csv(path, index=False)
+    return results
 
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--experiment", choices=list(EXPERIMENTS), action="append",
+    p.add_argument("--experiment", choices=[*STAGE1, *EXPERIMENTS], action="append",
                    help="run only this experiment (repeatable); default: all")
-    p.add_argument("--epochs", type=int, default=20)
-    p.add_argument("--batch-size", type=int, default=1024)
-    p.add_argument("--patience", type=int, default=3)
+    p.add_argument("--epochs", type=int, default=20, help="Stage 2 max epochs")
+    p.add_argument("--batch-size", type=int, default=1024, help="Stage 2 batch size")
+    p.add_argument("--patience", type=int, default=3, help="Stage 2 early-stopping patience")
+    p.add_argument("--stage1", choices=list(STAGE1), default="contrastive_relu_adam",
+                   help="Stage 1 model whose speech head the contrastive_* Stage 2 runs use")
+    p.add_argument("--stage1-epochs", type=int, default=300)
+    p.add_argument("--stage1-patience", type=int, default=30)
     p.add_argument("--device", help="cpu, cuda or mps (default: auto)")
     a = p.parse_args()
 
-    names = a.experiment or list(EXPERIMENTS)
-    results = run(names, a.epochs, a.batch_size, a.patience, a.device)
-    out = RESULTS / "summary.csv"
-    if out.exists():  # keep earlier results for experiments not re-run
-        old = pd.read_csv(out)
-        results = pd.concat([old[~old["baseline"].isin(names)], results], ignore_index=True)
-    results.to_csv(out, index=False)
+    names = a.experiment or [*STAGE1, *EXPERIMENTS]
+    stage2, stage1 = run(names, a.epochs, a.batch_size, a.patience, a.device, a.stage1,
+                         a.stage1_epochs, a.stage1_patience)
 
-    table = results.pivot_table(index="baseline", columns=["split", "subset"],
-                                values="macro_f1", sort=False).round(3)
-    print("\nmacro-F1 (threshold tuned on val)")
-    print(table.to_string())
-    baselines = RESULTS / "baselines.csv"
-    if baselines.exists():
-        b = pd.read_csv(baselines).query("split == 'test' and subset == 'contested'")
-        print("\nfor comparison, test contested macro-F1: " + ", ".join(
-            f"{r.baseline} {r.macro_f1:.3f}" for r in b.itertuples()))
-    print(f"\nwritten to {out}")
+    if len(stage1):
+        save(stage1, RESULTS / "retrieval.csv", "experiment")
+        print("\nStage 1 retrieval (within session; chance in the last two columns)")
+        print(stage1.set_index(["experiment", "split"])[
+            ["top1", "top10", "chance_top1", "chance_top10"]].round(3).to_string())
+    if len(stage2):
+        stage2 = save(stage2, RESULTS / "summary.csv", "baseline")
+        print("\nStage 2 macro-F1, test split (threshold tuned on val)")
+        print(stage2.query("split == 'test'").pivot_table(
+            index="baseline", columns="subset", values="macro_f1", sort=False).round(3).to_string())
+        baselines = RESULTS / "baselines.csv"
+        if baselines.exists():
+            b = pd.read_csv(baselines).query("split == 'test'")
+            print("\nbaselines, test macro-F1:")
+            print(b.pivot_table(index="baseline", columns="subset", values="macro_f1",
+                                sort=False).round(3).to_string())
+    print(f"\nwritten to {RESULTS}")

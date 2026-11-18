@@ -2,7 +2,8 @@
 
 Every baseline predicts P(Yes) for each (country-session, resolution) vote, the same
 target as the Stage 2 head (sigmoid + BCELoss), and is scored on val, test and
-test_heldout, over all votes and over contested votes only.
+test_heldout, over all votes, contested votes only, and votes with no history (no
+matching resolution last session, ~18% of votes, where history models can only guess).
 
     always_yes          P(Yes) = 1. Shows how misleading raw accuracy is.
     last_session_vote   The country's vote on the matching resolution last session
@@ -58,6 +59,13 @@ def target(votes):
 
 def load_all():
     return {s: load_split(s) for s in ["train", *EVAL_SPLITS]}
+
+
+def subsets(votes):
+    """(name, mask) for each subset every model is scored on."""
+    return [("all", np.ones(len(votes), bool)),
+            ("contested", votes["contested"].to_numpy(bool)),
+            ("no_history", votes["last_vote"].isna().to_numpy())]
 
 
 def pair_features(S, R):
@@ -151,8 +159,7 @@ def evaluate(name, data, probs, threshold, seconds):
     for split in EVAL_SPLITS:
         votes = data[split][1]
         y, p = target(votes), probs[split]
-        for subset, mask in [("all", np.ones(len(votes), bool)),
-                             ("contested", votes["contested"].to_numpy(bool))]:
+        for subset, mask in subsets(votes):
             rows.append({"baseline": name, "split": split, "subset": subset,
                          "n": int(mask.sum()), **scores(y[mask], p[mask], threshold),
                          "threshold": round(threshold, 4), "seconds": round(seconds, 1)})

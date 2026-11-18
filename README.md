@@ -87,6 +87,7 @@ Each experiment changes **one thing** from another.
 | `contrastive_relu_sgd` | Adam → SGD with momentum | Does the optimizer matter? |
 | `contrastive_relu_adam_t0.05` | Temperature 0.07 → 0.05 | How sharp should the contrast be? |
 | `contrastive_relu_adam_dropout` | Dropout in the heads | Are we overfitting? |
+| `contrastive_probe` | Stage 2 on the frozen Stage 1 speech head instead of raw embeddings | Does contrastive training help vote prediction? |
 | `contrastive_plus_history` | Adds last-session votes to the Stage 2 input | Do speeches add signal beyond history? |
 
 ### Baselines

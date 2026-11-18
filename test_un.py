@@ -7,12 +7,14 @@ Requires data/processed/ (build it with `uv run python un_data.py`).
 import json
 
 import numpy as np
+import pandas as pd
 import pytest
 import torch
 
 from comparison import EVAL_SPLITS, always_yes, best_threshold, last_session_vote, scores, target
 from embed_cache import DEFAULT_MODEL, cache_dir, chunk_text, load_embeddings
-from un_contrastive import EXPERIMENTS, history_onehot, train
+from un_contrastive import (EXPERIMENTS, STAGE1, PairData, clip_logits, clip_loss, history_onehot,
+                            retrieval, train, train_contrastive)
 from un_data import (ISSUES, OUT, TEST_START, VAL_START, VOTE_RECORD_GROUPS, load_processed,
                      load_split, vote_records)
 
@@ -211,3 +213,53 @@ def test_train_learns_a_simple_rule():
                         batch_size=64, device=torch.device("cpu"), log=lambda *_: None)
     assert hist["val_macro_f1"].max() > 0.9
     assert hist["train_loss"].iloc[-1] < hist["train_loss"].iloc[0]
+
+
+# ---------------------------------------------------------------- Stage 1
+
+@pytest.mark.parametrize("name", list(STAGE1))
+def test_stage1_heads_map_both_views_to_one_space(name):
+    model, loss_fn, optimizer = STAGE1[name](20, 24)
+    logits = clip_logits(model, torch.randn(5, 20), torch.randn(5, 24))
+    assert logits.shape == (5, 5)
+    assert torch.isfinite(clip_loss(loss_fn, logits))
+
+
+def test_clip_loss_is_lower_when_the_diagonal_matches():
+    loss_fn = torch.nn.CrossEntropyLoss()
+    matched = clip_loss(loss_fn, torch.eye(6) * 10)
+    shuffled = clip_loss(loss_fn, torch.eye(6)[torch.tensor([1, 2, 3, 4, 5, 0])] * 10)
+    assert matched < 0.01 < shuffled
+
+
+def test_stage1_batches_never_mix_sessions(splits):
+    speeches, votes = splits["val"]
+    tables = (torch.zeros(len(speeches), 4), pd.Index(speeches["speech_id"]))
+    pairs = PairData(speeches, votes, tables)
+    session = speeches.set_index("speech_id").loc[vote_records(votes).index, "session"].to_numpy()
+    batches = list(pairs.batches(torch.Generator().manual_seed(0)))
+    assert sum(len(b) for b in batches) == len(pairs)
+    assert all(len(set(session[b.numpy()])) == 1 for b in batches)
+
+
+class _TinyPairs:
+    """Stand-in for PairData: the speech is a noisy linear view of the vote record."""
+    def __init__(self, seed, n_sessions=8, per_session=30):
+        g = torch.Generator().manual_seed(seed)
+        self.V = torch.rand(n_sessions * per_session, 24, generator=g)
+        mix = torch.randn(24, 16, generator=torch.Generator().manual_seed(99))
+        self.S = self.V @ mix + 0.1 * torch.randn(len(self.V), 16, generator=g)
+        self.sessions = list(torch.arange(len(self.V)).split(per_session))
+    def __len__(self):
+        return len(self.V)
+    def batches(self, gen=None, max_batch=256):
+        yield from self.sessions
+
+
+def test_train_contrastive_beats_chance():
+    pairs = {"train": _TinyPairs(0), "val": _TinyPairs(1)}
+    model, loss_fn, optimizer = STAGE1["contrastive_relu_adam"](16, 24)
+    model, hist = train_contrastive(model, loss_fn, optimizer, pairs, epochs=40, patience=40,
+                                    device=torch.device("cpu"), log=lambda *_: None)
+    r = retrieval(model, loss_fn, pairs["val"], torch.device("cpu"))
+    assert r["top1"] > 5 * r["chance_top1"]
