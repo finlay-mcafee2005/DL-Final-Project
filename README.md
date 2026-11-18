@@ -134,7 +134,7 @@ git clone https://github.com/finlay-mcafee2005/DL-Final-Project.git
 cd DL-Final-Project
 uv sync                              # create .venv and install locked dependencies
 
-uv run python un_data.py             # join speeches with votes, 80/20 split -> data/processed/
+uv run python un_data.py             # join speeches with votes, time splits -> data/processed/
 uv run python embed_cache.py         # cache sentence embeddings (run once)
 uv run python comparison.py          # run the baselines
 uv run python un_contrastive.py      # run every experiment

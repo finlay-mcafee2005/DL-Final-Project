@@ -4,8 +4,12 @@ Run with: uv run pytest test_un.py -v
 Requires data/processed/ (build it with `uv run python un_data.py`).
 """
 
+import json
+
+import numpy as np
 import pytest
 
+from embed_cache import DEFAULT_MODEL, cache_dir, chunk_text, load_embeddings
 from un_data import OUT, TEST_START, VAL_START, load_processed, load_split
 
 pytestmark = pytest.mark.skipif(not (OUT / "speeches.csv").exists(),
@@ -83,3 +87,33 @@ def test_history_only_uses_earlier_sessions(splits):
     for _, votes in splits.values():
         h = votes.dropna(subset=["last_vote_session"])
         assert (h["last_vote_session"] < h["session"]).all()
+
+
+# ---------------------------------------------------------------- embeddings
+# Built with `uv run python embed_cache.py`; skipped until the cache exists.
+
+needs_embeddings = pytest.mark.skipif(
+    not (cache_dir(DEFAULT_MODEL) / "meta.json").exists(),
+    reason="run `uv run python embed_cache.py` first")
+
+
+def test_chunks_keep_every_word_in_order_and_respect_the_limit():
+    text = "Short one. " + "word " * 400 + "end. Another sentence here! And one more?"
+    chunks = chunk_text(text, max_words=50)
+    assert " ".join(chunks).split() == text.split()
+    assert all(0 < len(c.split()) <= 50 for c in chunks)
+
+
+@needs_embeddings
+@pytest.mark.parametrize("kind,key", [("speeches", "speech_id"), ("resolutions", "undl_id")])
+def test_every_row_has_one_finite_unit_embedding(data, kind, key):
+    speeches, _, resolutions = data
+    ids, X = load_embeddings(kind)
+    meta = json.loads((cache_dir(DEFAULT_MODEL) / "meta.json").read_text())
+    expected = (speeches if kind == "speeches" else resolutions)[key]
+    if meta["limit"] is None:  # a --limit smoke-test cache only covers the first rows
+        assert set(ids) == set(expected)
+    assert len(ids) == len(set(ids)) == len(X)
+    assert X.shape[1] == meta["dim"]
+    assert np.isfinite(X).all()
+    assert np.allclose(np.linalg.norm(X, axis=1), 1, atol=1e-4)
