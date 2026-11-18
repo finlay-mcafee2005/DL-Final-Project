@@ -9,6 +9,7 @@ import json
 import numpy as np
 import pytest
 
+from comparison import EVAL_SPLITS, always_yes, best_threshold, last_session_vote, scores, target
 from embed_cache import DEFAULT_MODEL, cache_dir, chunk_text, load_embeddings
 from un_data import OUT, TEST_START, VAL_START, load_processed, load_split
 
@@ -117,3 +118,30 @@ def test_every_row_has_one_finite_unit_embedding(data, kind, key):
     assert X.shape[1] == meta["dim"]
     assert np.isfinite(X).all()
     assert np.allclose(np.linalg.norm(X, axis=1), 1, atol=1e-4)
+
+
+# ---------------------------------------------------------------- baselines
+
+def test_scores_on_a_known_case():
+    y = np.array([1, 1, 1, 0])
+    assert scores(y, np.ones(4))["accuracy"] == 0.75
+    assert scores(y, np.ones(4))["balanced_acc"] == 0.5
+    assert scores(y, y.astype(float))["macro_f1"] == 1.0
+    assert scores(y, np.array([0.9, 0.8, 0.7, 0.6]), best_threshold(y, np.array([0.9, 0.8, 0.7, 0.6])))["macro_f1"] == 1.0
+
+
+@pytest.mark.parametrize("baseline", [always_yes, last_session_vote])
+def test_baselines_give_one_probability_per_vote(splits, baseline):
+    probs, threshold = baseline(splits)
+    for s in EVAL_SPLITS:
+        assert len(probs[s]) == len(splits[s][1])
+        assert ((probs[s] >= 0) & (probs[s] <= 1)).all()
+    assert 0 <= threshold <= 1
+
+
+def test_last_session_vote_beats_always_yes_on_contested_test(splits):
+    votes = splits["test"][1]
+    contested = votes["contested"].to_numpy(bool)
+    y = target(votes)[contested]
+    history = last_session_vote(splits)[0]["test"][contested]
+    assert scores(y, history)["macro_f1"] > scores(y, np.ones(len(y)))["macro_f1"] + 0.2
