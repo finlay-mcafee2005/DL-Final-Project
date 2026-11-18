@@ -11,7 +11,8 @@ import pytest
 
 from comparison import EVAL_SPLITS, always_yes, best_threshold, last_session_vote, scores, target
 from embed_cache import DEFAULT_MODEL, cache_dir, chunk_text, load_embeddings
-from un_data import OUT, TEST_START, VAL_START, load_processed, load_split
+from un_data import (ISSUES, OUT, TEST_START, VAL_START, VOTE_RECORD_GROUPS, load_processed,
+                     load_split, vote_records)
 
 pytestmark = pytest.mark.skipif(not (OUT / "speeches.csv").exists(),
                                 reason="run `uv run python un_data.py` first")
@@ -145,3 +146,26 @@ def test_last_session_vote_beats_always_yes_on_contested_test(splits):
     y = target(votes)[contested]
     history = last_session_vote(splits)[0]["test"][contested]
     assert scores(y, history)["macro_f1"] > scores(y, np.ones(len(y)))["macro_f1"] + 0.2
+
+
+# ---------------------------------------------------------------- vote records (Stage 1)
+
+def test_every_resolution_has_issue_tags(data):
+    _, _, resolutions = data
+    tags = resolutions[[f"issue_{k}" for k in ISSUES]]
+    assert tags.dtypes.eq(bool).all()
+    assert tags.any(axis=1).mean() > 0.75  # keyword rules should tag most resolutions
+
+
+@pytest.mark.parametrize("split", ["train", "val", "test", "test_heldout"])
+def test_one_vote_record_per_speech_with_valid_shares(splits, split):
+    speeches, votes = splits[split]
+    V = vote_records(votes)
+    assert list(V.index) == list(votes["speech_id"].unique())
+    assert set(V.index) == set(speeches["speech_id"])
+    assert V.shape[1] == 3 * len(VOTE_RECORD_GROUPS)
+    assert np.isfinite(V.to_numpy()).all()
+    for group in VOTE_RECORD_GROUPS:
+        total = V[[f"{group}_{v}" for v in "YNA"]].sum(axis=1)
+        assert (np.isclose(total, 1) | np.isclose(total, 0)).all()
+    assert np.allclose(V[["all_Y", "all_N", "all_A"]].sum(axis=1), 1)

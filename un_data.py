@@ -6,7 +6,8 @@ Reads the raw data in data/ and writes a model-ready dataset to data/processed/:
                      (speech_id, iso3, session, year, speaker, text, split, heldout_country)
     votes.csv        one row per (speech_id, undl_id): vote in {Y, N, A}, plus the
                      country's vote on the same issue in the last session (history)
-    resolutions.csv  one row per resolution (title, agenda, subjects, tallies, contested)
+    resolutions.csv  one row per resolution (title, agenda, subjects, tallies, contested,
+                     issue_<area> tags)
 
 Alignment: the General Debate speech of session t (September of year t) is paired
 with every recorded vote the country cast in session t. Only speeches with at least
@@ -51,6 +52,31 @@ VOTE_CODE_TO_SPEECH_CODE = {
     "EAT": "TZA",  # Tanganyika, before union with Zanzibar in 1964
 }
 VALID_VOTES = ["Y", "N", "A"]  # X = non-voting, which is not a vote
+
+# Issue areas, after Voeten's six codes. The vote file (UN Digital Library) has no
+# issue codes, so each resolution is tagged by keywords in its title, agenda item and
+# subject tags. A resolution can have several issues ("Israeli nuclear armament" is
+# middle_east and nuclear); one with none is "other" (mostly general security
+# questions such as Korea, Cyprus or the admission of new members).
+ISSUE_PATTERNS = {
+    "middle_east": r"palestin|israel|middle east|occupied (?:arab |syrian )?territor|golan"
+                   r"|jerusalem|lebanon|unrwa|gaza|west bank|arab territories",
+    "nuclear": r"nuclear|atomic|non-?proliferation",
+    "disarmament": r"disarm|weapon|\barms\b|missile|outer space|landmine|\bmines\b|munition"
+                   r"|militar|armament",
+    "human_rights": r"human rights|torture|racial|discrimination|rights of the child|women"
+                    r"|refugee|death penalty|executions|religious|indigenous|apartheid"
+                    r"|people of indian origin",
+    "colonialism": r"colonial|self-determination|trust territor|non-self-governing|namibia"
+                   r"|south west africa|southern rhodesia|western sahara|puerto rico"
+                   r"|new caledonia|portuguese|gibraltar|falkland|malvinas|mayotte"
+                   r"|east timor|question of oman",
+    "development": r"development|economic|trade|\bdebt\b|financial|poverty|environment"
+                   r"|climate|food|commodit|industrial|sustainable|technology|embargo",
+}
+ISSUES = list(ISSUE_PATTERNS)
+# Groups in a vote record: each issue, resolutions with no issue, and every vote.
+VOTE_RECORD_GROUPS = ISSUES + ["other", "all"]
 
 
 # ---------------------------------------------------------------- loading
@@ -104,7 +130,16 @@ def build_resolutions(votes_raw):
     cast = (r["total_yes"] + r["total_no"] + r["total_abstentions"]).astype(float)
     r["yes_share"] = (r["total_yes"] / cast.replace(0, np.nan)).round(4)
     r["contested"] = (1 - r["yes_share"]) >= CONTESTED_MIN_SHARE
+    r = r.join(tag_issues(r))
     return r.sort_values(["session", "date", "undl_id"]).reset_index(drop=True)
+
+
+def tag_issues(resolutions):
+    """Boolean issue_<name> column per issue area (see ISSUE_PATTERNS)."""
+    text = (resolutions["title"].fillna("") + " | " + resolutions["agenda_title"].fillna("")
+            + " | " + resolutions["subjects"].fillna("")).str.lower()
+    return pd.DataFrame({f"issue_{k}": text.str.contains(p, regex=True)
+                         for k, p in ISSUE_PATTERNS.items()}, index=resolutions.index)
 
 
 def match_previous(resolutions):
@@ -233,6 +268,33 @@ def load_split(split):
     return speeches, votes
 
 
+def vote_records(votes):
+    """One vote-record vector per speech: the Stage 1 "votes" view.
+
+    `votes` is a frame from load_split() (votes joined with resolution info). For each
+    group in VOTE_RECORD_GROUPS (six issues, "other", "all") the record holds the
+    country's share of Yes, No and Abstain among its votes on that group's resolutions
+    that session: 8 groups x 3 = 24 columns named <group>_<Y|N|A>. A group the country
+    cast no votes on that session is all zeros. Only same-session votes are used, so the
+    record never sees the future.
+
+    Returns a DataFrame indexed by speech_id, in the order speech_ids first appear.
+    """
+    ids = pd.Index(votes["speech_id"].unique(), name="speech_id")
+    member = {k: votes[f"issue_{k}"].to_numpy(bool) for k in ISSUES}
+    member["other"] = ~np.column_stack(list(member.values())).any(axis=1)
+    member["all"] = np.ones(len(votes), bool)
+    cols = {}
+    for group in VOTE_RECORD_GROUPS:
+        v = votes[member[group]]
+        counts = pd.crosstab(v["speech_id"], v["vote"]).reindex(
+            index=ids, columns=VALID_VOTES, fill_value=0)
+        shares = counts.div(counts.sum(axis=1).replace(0, 1), axis=0)
+        for vote in VALID_VOTES:
+            cols[f"{group}_{vote}"] = shares[vote].astype(np.float32)
+    return pd.DataFrame(cols, index=ids)
+
+
 if __name__ == "__main__":
     speeches, votes, resolutions = build()
     print(f"speeches: {len(speeches):,}  votes: {len(votes):,}  resolutions: {len(resolutions):,}"
@@ -245,4 +307,6 @@ if __name__ == "__main__":
         mix = vo.vote.value_counts(normalize=True).round(3).to_dict()
         print(f"  {s:12s} {yrs}: {len(sp):6,} speeches, {len(vo):8,} votes, "
               f"{vo.contested.mean():.0%} contested, mix {mix}")
+    print("issue tags: " + ", ".join(f"{k} {resolutions[f'issue_{k}'].mean():.0%}" for k in ISSUES)
+          + f", none {(~resolutions[[f'issue_{k}' for k in ISSUES]].any(axis=1)).mean():.0%}")
     print(f"written to {OUT}")
