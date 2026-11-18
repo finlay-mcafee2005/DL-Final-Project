@@ -25,7 +25,7 @@ Both datasets are public, already cleaned, and keyed by country and year.
 | Dataset | What it contains | Unit we use |
 |---|---|---|
 | [UN General Debate Corpus](https://doi.org/10.7910/DVN/0TJX8Y) (Baturo, Dasandi & Mikhaylov) | English text of every General Debate speech since 1970 | One speech per country per year |
-| [UN General Assembly Voting Data](https://doi.org/10.7910/DVN/LEJUQZ) (Voeten) | Every recorded roll-call vote (Yes / No / Abstain) with resolution descriptions and issue codes | One (country, resolution, vote) triple |
+| [UN General Assembly Voting Data](https://doi.org/10.7910/DVN/LEJUQZ) (Voeten) | Every recorded roll-call vote (Yes / No / Abstain) with resolution titles, agenda items and subject tags (issue areas are tagged from these by keyword, see `un_data.py`) | One (country, resolution, vote) triple |
 
 **Alignment.** The speech from the September General Debate of year *t* is paired with every recorded vote in that same session.
 
@@ -53,7 +53,7 @@ A pretrained sentence-transformer embeds each speech (chunked, then mean-pooled)
 
 ### Stage 1: contrastive pretraining (CLIP-style)
 
-Two `nn.Sequential` projection heads map **speeches** and **vote records** (a country's per-issue voting profile for the session) into the same space. In a batch of *B* country-sessions, the *B × B* similarity matrix should peak on the diagonal: each speech matches its own country's votes. The loss is `nn.CrossEntropyLoss` over that matrix in both directions.
+Two `nn.Sequential` projection heads map **speeches** and **vote records** (a country's voting profile for the session: its share of Yes / No / Abstain in each of six issue areas, Middle East, nuclear, disarmament, human rights, colonialism and development, plus "other" and "all", 24 numbers from `vote_records()` in `un_data.py`) into the same space. In a batch of *B* country-sessions, the *B × B* similarity matrix should peak on the diagonal: each speech matches its own country's votes. The loss is `nn.CrossEntropyLoss` over that matrix in both directions.
 
 ### Stage 2: vote prediction
 
