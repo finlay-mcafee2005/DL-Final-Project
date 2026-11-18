@@ -80,6 +80,8 @@ Each experiment changes **one thing** from another.
 | Experiment | What changes | Question it tests |
 |---|---|---|
 | `probe_no_contrastive` | Stage 2 only, on raw frozen embeddings | Does contrastive training add anything? |
+| `history_mlp` | Stage 2 head on resolution + last-session vote, no speech | How far does history alone get with the same head? |
+| `probe_plus_history` | Adds last-session vote to `probe_no_contrastive` | Do raw speech embeddings add signal beyond history? |
 | `contrastive_relu_adam` | Reference setup | Baseline contrastive model |
 | `contrastive_gelu_adam` | ReLU → GELU | Does the activation matter? |
 | `contrastive_relu_sgd` | Adam → SGD with momentum | Does the optimizer matter? |
