@@ -42,7 +42,7 @@ import pandas as pd
 import torch
 from torch import nn
 
-from comparison import EVAL_SPLITS, best_threshold, scores, target
+from comparison import EVAL_SPLITS, best_threshold, scores, subsets, target
 from embed_cache import load_embeddings
 from un_data import SEED, load_split
 
@@ -68,7 +68,7 @@ class VoteData:
             raise KeyError("some votes have no cached embedding; run embed_cache.py")
         self.history = torch.as_tensor(history_onehot(votes["last_vote"]))
         self.y = torch.as_tensor(target(votes), dtype=torch.float32)
-        self.contested = votes["contested"].to_numpy(bool)
+        self.subsets = subsets(votes)  # all / contested / no_history masks
 
     def __len__(self):
         return len(self.y)
@@ -219,7 +219,7 @@ def evaluate(name, model, data, inputs, device, seconds):
     for split in EVAL_SPLITS:
         d = data[split]
         y = d.y.numpy().astype(np.int8)
-        for subset, mask in [("all", np.ones(len(d), bool)), ("contested", d.contested)]:
+        for subset, mask in d.subsets:
             rows.append({"baseline": name, "split": split, "subset": subset,
                          "n": int(mask.sum()), **scores(y[mask], probs[split][mask], threshold),
                          "threshold": round(threshold, 4), "seconds": round(seconds, 1)})
@@ -270,7 +270,8 @@ if __name__ == "__main__":
     print(table.to_string())
     baselines = RESULTS / "baselines.csv"
     if baselines.exists():
-        b = pd.read_csv(baselines).query("split == 'test' and subset == 'contested'")
-        print("\nfor comparison, test contested macro-F1: " + ", ".join(
-            f"{r.baseline} {r.macro_f1:.3f}" for r in b.itertuples()))
+        b = pd.read_csv(baselines).query("split == 'test'")
+        print("\nbaselines, test macro-F1:")
+        print(b.pivot_table(index="baseline", columns="subset", values="macro_f1",
+                            sort=False).round(3).to_string())
     print(f"\nwritten to {out}")
