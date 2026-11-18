@@ -40,17 +40,22 @@ outputs P(Yes) through a final sigmoid, trained with nn.BCELoss. Inputs:
 contrastive_* vs probe_* asks whether Stage 1 helps; *_plus_history vs history_mlp asks
 whether the speech adds anything once last session's vote is known.
 
+    hybrid_history_or_speech  history_mlp's decision where a last-session vote exists,
+                              contrastive_probe's where it does not (no new training)
+
 Stage 2 training: Adam, batches of 1,024 votes, keeping the epoch with the best val
 macro-F1 (early stopping with --patience). As in comparison.py, the Yes/No cut-off is
 tuned on val and then applied unchanged to test.
 
 Usage:
     uv run python un_contrastive.py                                      # everything
+    uv run python un_contrastive.py --seeds 5            # everything, 5 seeds, mean ± std
     uv run python un_contrastive.py --experiment contrastive_relu_adam   # just one
     uv run python un_contrastive.py --experiment contrastive_plus_history \\
         --stage1 contrastive_gelu_adam      # Stage 2 on top of a different Stage 1
-Writes results/<experiment>.csv (per-epoch history), results/summary.csv (Stage 2
-scores, same columns as results/baselines.csv) and results/retrieval.csv (Stage 1).
+Writes results/<experiment>.csv (per-epoch history, one block per seed),
+results/summary.csv (Stage 2 scores per seed, same columns as results/baselines.csv
+plus `seed`) and results/retrieval.csv (Stage 1 retrieval per seed).
 """
 
 import argparse
@@ -303,7 +308,7 @@ def retrieval(model, loss_fn, pairs, device):
 
 
 def train_contrastive(model, loss_fn, optimizer, pairs, epochs=300, patience=30,
-                      max_batch=256, device=None, log=print, log_every=25):
+                      max_batch=256, device=None, log=print, log_every=25, seed=SEED):
     """Stage 1 training loop. Returns (best model, per-epoch history DataFrame).
 
     Each epoch visits every training session once, in random order (one batch per
@@ -312,7 +317,7 @@ def train_contrastive(model, loss_fn, optimizer, pairs, epochs=300, patience=30,
     """
     device = device or pick_device()
     model.to(device)
-    gen = torch.Generator().manual_seed(SEED)
+    gen = torch.Generator().manual_seed(seed)
     history, best, best_state, stale = [], float("inf"), None, 0
 
     for epoch in range(1, epochs + 1):
@@ -377,7 +382,7 @@ def predict(model, data, inputs, device, batch_size=8192):
 
 
 def train(model, loss_fn, optimizer, data, inputs, epochs=20, batch_size=1024,
-          patience=3, device=None, log=print):
+          patience=3, device=None, log=print, seed=SEED):
     """Stage 2 training loop. Returns (best model, per-epoch history DataFrame).
 
     Each epoch: one pass over shuffled training votes, then val loss and val macro-F1
@@ -387,7 +392,7 @@ def train(model, loss_fn, optimizer, data, inputs, epochs=20, batch_size=1024,
     device = device or pick_device()
     model.to(device)
     train_data, val = data["train"], data["val"]
-    gen = torch.Generator().manual_seed(SEED)
+    gen = torch.Generator().manual_seed(seed)
     history, best, best_state, stale = [], -1.0, None, 0
 
     for epoch in range(1, epochs + 1):
@@ -428,69 +433,123 @@ def train(model, loss_fn, optimizer, data, inputs, epochs=20, batch_size=1024,
     return model, pd.DataFrame(history)
 
 
-def evaluate(name, model, data, inputs, device, seconds):
-    """Final Stage 2 scores in the same layout as results/baselines.csv."""
-    probs = {s: predict(model, data[s], inputs, device) for s in EVAL_SPLITS}
-    threshold = best_threshold(data["val"].y.numpy(), probs["val"])
+def score_rows(name, data, decisions, threshold, seconds, seed):
+    """Final Stage 2 scores (one row per split x subset), as in results/baselines.csv."""
     rows = []
     for split in EVAL_SPLITS:
         d = data[split]
         y = d.y.numpy().astype(np.int8)
         for subset, mask in d.subsets:
-            rows.append({"baseline": name, "split": split, "subset": subset,
-                         "n": int(mask.sum()), **scores(y[mask], probs[split][mask], threshold),
-                         "threshold": round(threshold, 4), "seconds": round(seconds, 1)})
+            rows.append({"baseline": name, "seed": seed, "split": split, "subset": subset,
+                         "n": int(mask.sum()), **scores(y[mask], decisions[split][mask]),
+                         "threshold": threshold, "seconds": round(seconds, 1)})
     return rows
+
+
+def decide(probs, data):
+    """Yes/No decisions per split, with the threshold tuned on val."""
+    threshold = best_threshold(data["val"].y.numpy(), probs["val"])
+    return {s: (p >= threshold).astype(np.int8) for s, p in probs.items()}, round(threshold, 4)
+
+
+# ---------------------------------------------------------------- hybrid
+# Uses the history model where a last-session vote exists and the speech model where it
+# does not. No new training: it reuses the two trained models' P(Yes). The history
+# model keeps its own val-tuned threshold; the speech model's threshold is chosen to
+# maximise the hybrid's macro-F1 on all val votes (val only, so test stays untouched).
+# Macro-F1 does not add up over subsets, so the cut-off that is best for the speech
+# model on its own votes is not the best one for the combined predictions.
+
+HYBRIDS = {"hybrid_history_or_speech": ("history_mlp", "contrastive_probe")}
+
+
+def hybrid_decisions(data, p_history, t_history, p_speech):
+    def combine(split, t_speech):
+        no_history = dict(data[split].subsets)["no_history"]
+        return np.where(no_history, p_speech[split] >= t_speech,
+                        p_history[split] >= t_history).astype(np.int8)
+
+    y_val = data["val"].y.numpy()
+    nh_val = dict(data["val"].subsets)["no_history"]
+    grid = np.unique(np.quantile(p_speech["val"][nh_val], np.linspace(0.01, 0.99, 99)))
+    t_speech = float(max(grid, key=lambda t: scores(y_val, combine("val", t))["macro_f1"]))
+    return {s: combine(s, t_speech) for s in EVAL_SPLITS}, f"{t_history:.4f}/{t_speech:.4f}"
 
 
 # ---------------------------------------------------------------- run
 
-def run_stage1(name, pairs, device, epochs, patience):
-    print(f"running {name}  (Stage 1, contrastive)")
-    torch.manual_seed(SEED)
+def run_stage1(name, pairs, device, epochs, patience, seed):
+    print(f"running {name}  (Stage 1, contrastive, seed {seed})")
+    torch.manual_seed(seed)
     t0 = time.time()
     model, loss_fn, optimizer = STAGE1[name](pairs["train"].S.shape[1], pairs["train"].V.shape[1])
     model, hist = train_contrastive(model, loss_fn, optimizer, pairs, epochs, patience,
-                                    device=device)
-    hist.to_csv(RESULTS / f"{name}.csv", index=False)
-    rows = [{"experiment": name, "split": s, **retrieval(model, loss_fn, pairs[s], device),
+                                    device=device, seed=seed)
+    rows = [{"experiment": name, "seed": seed, "split": s,
+             **retrieval(model, loss_fn, pairs[s], device),
              "epochs": len(hist), "seconds": round(time.time() - t0, 1)} for s in EVAL_SPLITS]
-    return model, rows
+    return model, hist.assign(seed=seed), rows
 
 
 def run(names, epochs=20, batch_size=1024, patience=3, device=None,
-        stage1="contrastive_relu_adam", stage1_epochs=300, stage1_patience=30):
+        stage1="contrastive_relu_adam", stage1_epochs=300, stage1_patience=30, seeds=(SEED,)):
+    """Run each experiment once per seed. Returns (Stage 2 rows, Stage 1 rows)."""
     device = pick_device(device)
     print(f"device: {device}")
     tables, data, pairs = load_data()
     RESULTS.mkdir(exist_ok=True)
-    stage2_rows, stage1_rows, trained = [], [], {}
+    stage2_rows, stage1_rows, histories = [], [], {}
 
-    for name in names:
-        if name in STAGE1:
-            trained[name], rows = run_stage1(name, pairs, device, stage1_epochs, stage1_patience)
-            stage1_rows += rows
-            continue
+    def log_history(name, hist):
+        histories.setdefault(name, []).append(hist)
 
-        fn, inputs = EXPERIMENTS[name]
-        if "speech_proj" in inputs:
-            if stage1 not in trained:
-                trained[stage1], rows = run_stage1(stage1, pairs, device, stage1_epochs,
-                                                   stage1_patience)
-                stage1_rows += rows
-            P = project_speeches(trained[stage1], tables[0], device)
-            for d in data.values():
-                d.P = P
-        print(f"running {name}  (Stage 2, inputs: {', '.join(inputs)}"
-              + (f"; Stage 1 = {stage1})" if "speech_proj" in inputs else ")"))
-        torch.manual_seed(SEED)
-        t0 = time.time()
-        model, loss_fn, optimizer = fn(input_dim(data["train"], inputs))
-        model, hist = train(model, loss_fn, optimizer, data, inputs, epochs, batch_size,
-                            patience, device)
-        hist.to_csv(RESULTS / f"{name}.csv", index=False)
-        stage2_rows += evaluate(name, model, data, inputs, device, time.time() - t0)
+    for seed in seeds:
+        trained, decided = {}, {}
 
+        def stage1_model(name):
+            if name not in trained:
+                trained[name], hist, rows = run_stage1(name, pairs, device, stage1_epochs,
+                                                       stage1_patience, seed)
+                log_history(name, hist)
+                stage1_rows.extend(rows)
+            return trained[name]
+
+        def stage2_decisions(name):
+            if name in decided:
+                return decided[name]
+            if name in HYBRIDS:
+                history, speech = (stage2_decisions(n) for n in HYBRIDS[name])
+                decisions, threshold = hybrid_decisions(data, history[3], history[1], speech[3])
+                decided[name] = (decisions, threshold, 0.0, None)
+            else:
+                fn, inputs = EXPERIMENTS[name]
+                if "speech_proj" in inputs:
+                    P = project_speeches(stage1_model(stage1), tables[0], device)
+                    for d in data.values():
+                        d.P = P
+                print(f"running {name}  (Stage 2, inputs: {', '.join(inputs)}"
+                      + (f"; Stage 1 = {stage1}" if "speech_proj" in inputs else "")
+                      + f", seed {seed})")
+                torch.manual_seed(seed)
+                t0 = time.time()
+                model, loss_fn, optimizer = fn(input_dim(data["train"], inputs))
+                model, hist = train(model, loss_fn, optimizer, data, inputs, epochs,
+                                    batch_size, patience, device, seed=seed)
+                log_history(name, hist.assign(seed=seed))
+                probs = {s: predict(model, data[s], inputs, device) for s in EVAL_SPLITS}
+                decisions, threshold = decide(probs, data)
+                decided[name] = (decisions, threshold, time.time() - t0, probs)
+            return decided[name]
+
+        for name in names:
+            if name in STAGE1:
+                stage1_model(name)
+            else:
+                decisions, threshold, seconds, _ = stage2_decisions(name)
+                stage2_rows += score_rows(name, data, decisions, threshold, seconds, seed)
+
+    for name, hists in histories.items():
+        pd.concat(hists, ignore_index=True).to_csv(RESULTS / f"{name}.csv", index=False)
     return pd.DataFrame(stage2_rows), pd.DataFrame(stage1_rows)
 
 
@@ -504,10 +563,22 @@ def save(results, path, key):
     return results
 
 
+def mean_std(df, index, columns, value):
+    """Table of 'mean ± std' over seeds (just the mean when there is one seed)."""
+    g = df.groupby([*index, *columns], sort=False)[value]
+    mean, std, n = g.mean(), g.std(), g.size()
+    cell = mean.map("{:.3f}".format)
+    many = n > 1
+    cell[many] = cell[many] + " ± " + std[many].map("{:.3f}".format)
+    return cell.unstack(columns) if columns else cell
+
+
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--experiment", choices=[*STAGE1, *EXPERIMENTS], action="append",
+    p.add_argument("--experiment", choices=[*STAGE1, *EXPERIMENTS, *HYBRIDS], action="append",
                    help="run only this experiment (repeatable); default: all")
+    p.add_argument("--seeds", type=int, default=1,
+                   help="run every experiment this many times with different seeds")
     p.add_argument("--epochs", type=int, default=20, help="Stage 2 max epochs")
     p.add_argument("--batch-size", type=int, default=1024, help="Stage 2 batch size")
     p.add_argument("--patience", type=int, default=3, help="Stage 2 early-stopping patience")
@@ -518,20 +589,25 @@ if __name__ == "__main__":
     p.add_argument("--device", help="cpu, cuda or mps (default: auto)")
     a = p.parse_args()
 
-    names = a.experiment or [*STAGE1, *EXPERIMENTS]
+    names = a.experiment or [*STAGE1, *EXPERIMENTS, *HYBRIDS]
+    seeds = [SEED + i for i in range(a.seeds)]
     stage2, stage1 = run(names, a.epochs, a.batch_size, a.patience, a.device, a.stage1,
-                         a.stage1_epochs, a.stage1_patience)
+                         a.stage1_epochs, a.stage1_patience, seeds)
+    over = f" (mean ± std over {a.seeds} seeds)" if a.seeds > 1 else ""
 
     if len(stage1):
         save(stage1, RESULTS / "retrieval.csv", "experiment")
-        print("\nStage 1 retrieval (within session; chance in the last two columns)")
-        print(stage1.set_index(["experiment", "split"])[
-            ["top1", "top10", "chance_top1", "chance_top10"]].round(3).to_string())
+        chance = stage1.groupby("split", sort=False)[["chance_top1", "chance_top10"]].first()
+        print(f"\nStage 1 retrieval, within session{over}")
+        for metric in ["top1", "top10"]:
+            table = mean_std(stage1, ["experiment"], ["split"], metric)
+            table.loc["chance"] = chance[f"chance_{metric}"].map("{:.3f}".format)
+            print(f"\n{metric}:\n{table.to_string()}")
     if len(stage2):
         stage2 = save(stage2, RESULTS / "summary.csv", "baseline")
-        print("\nStage 2 macro-F1, test split (threshold tuned on val)")
-        print(stage2.query("split == 'test'").pivot_table(
-            index="baseline", columns="subset", values="macro_f1", sort=False).round(3).to_string())
+        print(f"\nStage 2 macro-F1, test split{over}")
+        print(mean_std(stage2.query("split == 'test'"), ["baseline"], ["subset"],
+                       "macro_f1").to_string())
         baselines = RESULTS / "baselines.csv"
         if baselines.exists():
             b = pd.read_csv(baselines).query("split == 'test'")

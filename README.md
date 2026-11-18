@@ -89,6 +89,7 @@ Each experiment changes **one thing** from another.
 | `contrastive_relu_adam_dropout` | Dropout in the heads | Are we overfitting? |
 | `contrastive_probe` | Stage 2 on the frozen Stage 1 speech head instead of raw embeddings | Does contrastive training help vote prediction? |
 | `contrastive_plus_history` | Adds last-session votes to the Stage 2 input | Do speeches add signal beyond history? |
+| `hybrid_history_or_speech` | `history_mlp` where a last-session vote exists, `contrastive_probe` where it doesn't | Can speeches fill the gaps history leaves? |
 
 ### Baselines
 
@@ -142,6 +143,7 @@ uv run python embed_cache.py         # cache sentence embeddings (run once)
 uv run python comparison.py          # run the baselines
 uv run python un_contrastive.py      # run every experiment
 uv run python un_contrastive.py --experiment contrastive_relu_adam   # run just one
+uv run python un_contrastive.py --seeds 5     # every experiment 5 times, mean ± std
 uv run pytest test_un.py -v          # run the tests
 ```
 
