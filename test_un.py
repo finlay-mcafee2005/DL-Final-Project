@@ -13,7 +13,7 @@ import torch
 
 from comparison import EVAL_SPLITS, always_yes, best_threshold, last_session_vote, scores, target
 from embed_cache import DEFAULT_MODEL, cache_dir, chunk_text, load_embeddings
-from un_contrastive import (EXPERIMENTS, STAGE1, PairData, clip_logits, clip_loss, history_onehot,
+from un_contrastive import (EXPERIMENTS, HYBRIDS, STAGE1, hybrid_decisions, mean_std, PairData, clip_logits, clip_loss, history_onehot,
                             retrieval, train, train_contrastive)
 from un_data import (ISSUES, OUT, TEST_START, VAL_START, VOTE_RECORD_GROUPS, load_processed,
                      load_split, vote_records)
@@ -263,3 +263,30 @@ def test_train_contrastive_beats_chance():
                                     device=torch.device("cpu"), log=lambda *_: None)
     r = retrieval(model, loss_fn, pairs["val"], torch.device("cpu"))
     assert r["top1"] > 5 * r["chance_top1"]
+
+
+# ---------------------------------------------------------------- hybrid and seeds
+
+class _Split:
+    def __init__(self, y, no_history):
+        self.y = torch.tensor(y, dtype=torch.float32)
+        self.subsets = [("no_history", np.array(no_history, bool))]
+
+
+def test_hybrid_uses_speech_only_where_there_is_no_history():
+    nh = [0, 0, 1, 1, 0, 1]
+    data = {s: _Split([1, 0, 1, 0, 1, 1], nh) for s in EVAL_SPLITS}
+    p_history = {s: np.array([0.9, 0.1, 0.0, 0.0, 0.8, 0.0]) for s in EVAL_SPLITS}
+    p_speech = {s: np.array([0.0, 1.0, 0.9, 0.2, 0.0, 0.7]) for s in EVAL_SPLITS}
+    decisions, _ = hybrid_decisions(data, p_history, 0.5, p_speech)
+    for s in EVAL_SPLITS:
+        assert decisions[s].tolist() == [1, 0, 1, 0, 1, 1]  # history where nh=0, speech where nh=1
+    assert set(HYBRIDS["hybrid_history_or_speech"]) <= set(EXPERIMENTS)
+
+
+def test_mean_std_formats_one_and_several_seeds():
+    df = pd.DataFrame({"baseline": ["a", "a", "b"], "subset": ["all"] * 3,
+                       "macro_f1": [0.8, 0.9, 0.7]})
+    t = mean_std(df, ["baseline"], ["subset"], "macro_f1")
+    assert t.loc["a", "all"] == "0.850 ± 0.071"
+    assert t.loc["b", "all"] == "0.700"
