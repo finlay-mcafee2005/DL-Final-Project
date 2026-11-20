@@ -160,29 +160,47 @@ def issue_tags(texts):
 # Each scorer is a plain callable, so tests can swap in stand-ins.
 
 class Whisper:
-    """faster-whisper transcription. Returns (segments, detected language, its probability).
+    """faster-whisper transcription, after a language check.
 
-    The language is detected, not forced: the corpus metadata can be wrong, and forcing
-    English on a speech given in another language yields a garbled transcript.
+    Returns (segments, detected language, share of checked clips in that language).
+    The corpus language field is not always right, and forcing English on a speech given
+    in another language yields a garbled transcript. The check uses a small multilingual
+    model (English-only models such as small.en always report English) on three 30-second
+    clips from inside the speech: the first seconds are usually the Assembly President
+    introducing the speaker, in English, whatever language the speaker then uses.
     """
+
+    DETECT_MODEL = "base"
+    CLIPS_AT = (0.25, 0.5, 0.75)
 
     def __init__(self, name=WHISPER_MODEL, device="cpu"):
         from faster_whisper import WhisperModel
         try:  # Apple-silicon (MPS) backend is experimental in CTranslate2; fall back to CPU
             self.model = WhisperModel(name, device=device,
                                       compute_type="float16" if device == "mps" else "int8")
-            self.device = device
         except (ValueError, RuntimeError) as err:
             print(f"  Whisper could not use {device} ({err}); using cpu")
             self.model = WhisperModel(name, device="cpu", compute_type="int8")
-            self.device = "cpu"
+        self.detector = WhisperModel(self.DETECT_MODEL, device="cpu", compute_type="int8")
 
-    def __call__(self, path):
-        segments, info = self.model.transcribe(str(path), vad_filter=True)
-        if info.language != "en":
-            return [], info.language, info.language_probability  # generator never consumed
-        return ([{"start": s.start, "end": s.end, "text": s.text} for s in segments],
-                info.language, info.language_probability)
+    def language(self, signal):
+        """Majority language over clips at CLIPS_AT, and the share of clips agreeing."""
+        clip = 30 * SR
+        votes = []
+        for at in self.CLIPS_AT:
+            start = max(0, min(int(at * len(signal)) - clip // 2, len(signal) - clip))
+            lang, _, _ = self.detector.detect_language(audio=signal[start:start + clip])
+            votes.append(lang)
+        top = max(set(votes), key=votes.count)
+        return top, votes.count(top) / len(votes)
+
+    def __call__(self, path, signal=None):
+        signal = load_audio(path) if signal is None else signal
+        lang, share = self.language(signal)
+        if lang != "en":
+            return [], lang, share
+        segments, _ = self.model.transcribe(signal, language="en", vad_filter=True)
+        return [{"start": s.start, "end": s.end, "text": s.text} for s in segments], lang, share
 
 
 def emotion_model_class():
@@ -340,7 +358,7 @@ def process(corpus, transcribe, voice, text, redo=False, log=print):
     """Score every speech in `corpus` (cached per speech). Returns all passages.
 
     Speeches Whisper detects as not English are skipped and listed in skipped.csv.
-    A cached file from before language detection was added is recomputed.
+    A cached file from before the language check was fixed is recomputed.
     """
     cache = OUT / "passages"
     cache.mkdir(parents=True, exist_ok=True)
@@ -349,30 +367,30 @@ def process(corpus, transcribe, voice, text, redo=False, log=print):
         path = cache / f"{row.speech_id}.csv"
         if path.exists() and not redo:
             cached = pd.read_csv(path)
-            if "whisper_language" in cached:
+            if "detected_language" in cached:
                 if len(cached):
                     frames.append(cached)
                 else:
                     skipped.append({"speech_id": row.speech_id, "country": row.country_name,
-                                    "whisper_language": "not en (cached)"})
+                                    "detected_language": "not en (cached)"})
                 continue
         t0 = time.time()
         audio = fetch_audio(row.audio_floor)
         signal = load_audio(audio)
         t1 = time.time()
-        segments, lang, prob = transcribe(audio)
+        segments, lang, share = transcribe(audio, signal)
         t2 = time.time()
         if lang != "en":
             log(f"  [{i}/{len(corpus)}] {row.speech_id} {row.country_name}: skipped, Whisper"
-                f" hears {lang!r} (p = {prob:.2f}), not English")
-            pd.DataFrame(columns=["speech_id", "country", "whisper_language"]).to_csv(path, index=False)
+                f" hears {lang!r} in {share:.0%} of checked clips, not English")
+            pd.DataFrame(columns=["speech_id", "country", "detected_language"]).to_csv(path, index=False)
             skipped.append({"speech_id": row.speech_id, "country": row.country_name,
-                            "whisper_language": lang, "probability": prob})
+                            "detected_language": lang, "share_of_clips": share})
             continue
         df = score_speech(signal, segments, voice, text)
         df.insert(0, "speech_id", row.speech_id)
         df.insert(1, "country", row.country_name)
-        df["whisper_language"] = lang
+        df["detected_language"] = lang
         df.to_csv(path, index=False)
         frames.append(df)
         minutes = len(signal) / SR / 60
