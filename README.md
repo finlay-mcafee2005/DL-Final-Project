@@ -122,6 +122,7 @@ The headline comparison is **`contrastive_plus_history` vs. `last_session_vote`*
 | `embed_cache.py` | Compute and save speech and resolution embeddings |
 | `un_contrastive.py` | Experiment functions + shared `train()` loop and logging |
 | `comparison.py` | Classical baselines |
+| `audio_tone.py` | Audio case study: tone of voice vs. text sentiment in the 2025 General Debate |
 | `plots.py` | Overlaid loss and F1 curves for the report |
 | `test_un.py` | Shape checks, no NaNs, no time leakage, beats `last_session_vote` |
 | `results/` | Per-run training history (CSV) and a summary table |
@@ -148,6 +149,24 @@ uv run pytest test_un.py -v          # run the tests
 ```
 
 Logging goes to CSV in `results/` by default. Weights & Biases is optional (`--wandb`).
+
+### Audio case study (optional)
+
+`audio_tone.py` compares how leaders *sound* with what their words *say*, using the
+[UN transcription corpus](https://huggingface.co/datasets/united-nations/transcription-corpus)
+(2025 General Debate floor audio, CC BY 4.0). It uses only speeches delivered in English,
+so the voice is the leader's own and not an interpreter's. Each speech is transcribed with
+Whisper and split into 5–20 second passages; each passage gets a text sentiment score and
+vocal arousal, dominance and valence, plus pitch, loudness, pauses and speaking rate. It then
+reports where words and voice disagree, tone by issue area, and tone vs. 2025 votes.
+
+```bash
+uv sync --extra audio                         # extra packages: Whisper, librosa, datasets
+uv run python audio_tone.py --limit 3         # quick check on 3 speeches
+uv run python audio_tone.py --device mps      # every English-delivered speech
+```
+
+Results go to `results/audio/`. Audio downloads to `data/audio/` (not tracked in git).
 
 ---
 

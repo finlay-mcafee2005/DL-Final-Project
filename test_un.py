@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 import torch
 
+import audio_tone
 from comparison import EVAL_SPLITS, always_yes, best_threshold, last_session_vote, scores, target
 from embed_cache import DEFAULT_MODEL, cache_dir, chunk_text, load_embeddings
 from un_contrastive import (EXPERIMENTS, HYBRIDS, STAGE1, hybrid_decisions, mean_std, PairData, clip_logits, clip_loss, history_onehot,
@@ -290,3 +291,37 @@ def test_mean_std_formats_one_and_several_seeds():
     t = mean_std(df, ["baseline"], ["subset"], "macro_f1")
     assert t.loc["a", "all"] == "0.850 ± 0.071"
     assert t.loc["b", "all"] == "0.700"
+
+
+# ---------------------------------------------------------------- audio tone
+
+def test_passages_cover_the_audio_and_respect_the_length_limits():
+    segs = [{"start": t, "end": t + 2.0, "text": "Word word." if t % 6 == 4 else "word word"}
+            for t in range(0, 60, 2)]
+    passages = audio_tone.merge_segments(segs, min_s=5, max_s=12)
+    assert passages[0]["start"] == 0 and passages[-1]["end"] == 60
+    assert all(a["end"] == b["start"] for a, b in zip(passages, passages[1:]))  # no gaps
+    assert all(5 <= p["end"] - p["start"] <= 12 for p in passages[:-1])
+    words = sum(len(p["text"].split()) for p in passages)
+    assert words == 2 * len(segs)
+
+
+def test_short_leftover_joins_the_previous_passage():
+    segs = [{"start": 0, "end": 6, "text": "A full sentence."}, {"start": 6, "end": 7, "text": "Thanks."}]
+    passages = audio_tone.merge_segments(segs, min_s=5, max_s=20)
+    assert len(passages) == 1 and passages[0]["end"] == 7
+
+
+def test_country_codes_join_to_speech_ids():
+    pytest.importorskip("pycountry")
+    assert audio_tone.to_speech_id("AL") == "ALB_80"
+    assert audio_tone.to_speech_id("us") == "USA_80"
+    assert audio_tone.to_speech_id(None, "Kenya") == "KEN_80"
+    assert audio_tone.is_english("EN") and not audio_tone.is_english("fr")
+
+
+def test_scores_are_standardised_within_each_speech():
+    df = pd.DataFrame({"speech_id": ["a"] * 3 + ["b"] * 3, "x": [1.0, 2, 3, 10, 20, 30]})
+    z = audio_tone.zscore_within(df, ["x"])["x"]
+    assert np.allclose(z[:3], z[3:])  # same pattern, different scale -> same z
+    assert np.allclose(z.groupby(df["speech_id"]).mean(), 0)
