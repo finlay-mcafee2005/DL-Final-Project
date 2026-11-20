@@ -217,7 +217,15 @@ def emotion_model_class():
 
 
 class VoiceEmotion:
-    """Arousal, dominance, valence from audeering's wav2vec2 model (outputs in that order)."""
+    """Arousal, dominance, valence from audeering's wav2vec2 model (outputs in that order).
+
+    A clip is scored in windows of at most WINDOW_SECONDS and the windows are averaged
+    (weighted by length): the model's memory grows quickly with clip length, and a long
+    passage can exhaust GPU memory. If the GPU still runs out, the model moves to the
+    CPU for the rest of the run.
+    """
+
+    WINDOW_SECONDS = 10.0
 
     def __init__(self, name=EMOTION_MODEL, device="cpu"):
         import torch
@@ -226,11 +234,36 @@ class VoiceEmotion:
         self.extractor = Wav2Vec2FeatureExtractor.from_pretrained(name)
         self.model = emotion_model_class().from_pretrained(name).to(device).eval()
 
-    def __call__(self, signal):
-        x = self.extractor(signal, sampling_rate=SR, return_tensors="pt").input_values
+    def windows(self, signal):
+        size = int(self.WINDOW_SECONDS * SR)
+        n = max(1, int(np.ceil(len(signal) / size)))
+        return [w for w in np.array_split(signal, n) if len(w) >= SR // 2]
+
+    def _score(self, window):
+        x = self.extractor(window, sampling_rate=SR, return_tensors="pt").input_values
         with self.torch.no_grad():
-            arousal, dominance, valence = self.model(x.to(self.device))[0].cpu().tolist()
-        return {"arousal": arousal, "dominance": dominance, "valence": valence}
+            out = self.model(x.to(self.device))[0].cpu().numpy()
+        if self.device == "mps":
+            self.torch.mps.empty_cache()
+        return out
+
+    def __call__(self, signal):
+        scores, weights = [], []
+        for w in self.windows(signal):
+            try:
+                scores.append(self._score(w))
+            except (RuntimeError, MemoryError) as err:  # torch.OutOfMemoryError is a RuntimeError
+                if self.device == "cpu" or "memory" not in str(err).lower():
+                    raise
+                print(f"  voice model ran out of {self.device} memory; moving it to cpu")
+                self.device = "cpu"
+                self.model.to("cpu")
+                if self.torch.backends.mps.is_available():
+                    self.torch.mps.empty_cache()
+                scores.append(self._score(w))
+            weights.append(len(w))
+        arousal, dominance, valence = np.average(np.array(scores), axis=0, weights=weights)
+        return {"arousal": float(arousal), "dominance": float(dominance), "valence": float(valence)}
 
 
 class TextSentiment:
