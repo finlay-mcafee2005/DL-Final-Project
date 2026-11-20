@@ -11,6 +11,16 @@ dependencies = [
     "torch>=2.15.0",
 ]
 
+[project.optional-dependencies]
+# Audio tone case study (audio_tone.py): uv sync --extra audio
+audio = [
+    "datasets>=3.0",
+    "faster-whisper>=1.1",
+    "librosa>=0.10",
+    "matplotlib>=3.9",
+    "pycountry>=24.6",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=9.2.0",

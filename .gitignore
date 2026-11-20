@@ -17,3 +17,7 @@ data/*.code-workspace
 .Rhistory
 .Rapp.history
 .DS_Store*
+
+# Audio case study: downloaded speech audio (large; re-fetched by audio_tone.py)
+data/audio/
+data/hf/
