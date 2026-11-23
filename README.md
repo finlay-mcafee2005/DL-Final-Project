@@ -123,7 +123,7 @@ The headline comparison is **`contrastive_plus_history` vs. `last_session_vote`*
 | `un_contrastive.py` | Experiment functions + shared `train()` loop and logging |
 | `comparison.py` | Classical baselines |
 | `audio_tone.py` | Audio case study: tone of voice vs. text sentiment in the 2025 General Debate |
-| `plots.py` | Overlaid loss and F1 curves for the report |
+| `plots.py` | Report figures (loss curves, retrieval, results, accuracy by issue) → `report/figures/` |
 | `test_un.py` | Shape checks, no NaNs, no time leakage, beats `last_session_vote` |
 | `results/` | Per-run training history (CSV) and a summary table |
 | `report/` | Final report (`report.tex`, `report.pdf`, figures) |
@@ -145,6 +145,7 @@ uv run python comparison.py          # run the baselines
 uv run python un_contrastive.py      # run every experiment
 uv run python un_contrastive.py --experiment contrastive_relu_adam   # run just one
 uv run python un_contrastive.py --seeds 5     # every experiment 5 times, mean ± std
+uv run python plots.py              # draw the report figures
 uv run pytest test_un.py -v          # run the tests
 ```
 

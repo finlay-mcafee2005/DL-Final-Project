@@ -55,7 +55,8 @@ Usage:
         --stage1 contrastive_gelu_adam      # Stage 2 on top of a different Stage 1
 Writes results/<experiment>.csv (per-epoch history, one block per seed),
 results/summary.csv (Stage 2 scores per seed, same columns as results/baselines.csv
-plus `seed`) and results/retrieval.csv (Stage 1 retrieval per seed).
+plus `seed`), results/retrieval.csv (Stage 1 retrieval per seed) and
+results/by_issue.csv (Stage 2 test scores per issue area, shared with comparison.py).
 """
 
 import argparse
@@ -68,7 +69,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from comparison import EVAL_SPLITS, best_threshold, scores, subsets, target
+from comparison import EVAL_SPLITS, best_threshold, issue_rows, save, scores, subsets, target
 from embed_cache import load_embeddings
 from un_data import SEED, load_split, vote_records
 
@@ -97,6 +98,7 @@ class VoteData:
         self.history = torch.as_tensor(history_onehot(votes["last_vote"]))
         self.y = torch.as_tensor(target(votes), dtype=torch.float32)
         self.subsets = subsets(votes)  # all / contested / no_history masks
+        self.votes = votes[["vote", "contested", *[c for c in votes if c.startswith("issue_")]]]
 
     def __len__(self):
         return len(self.y)
@@ -493,12 +495,15 @@ def run_stage1(name, pairs, device, epochs, patience, seed):
 
 def run(names, epochs=20, batch_size=1024, patience=3, device=None,
         stage1="contrastive_relu_adam", stage1_epochs=300, stage1_patience=30, seeds=(SEED,)):
-    """Run each experiment once per seed. Returns (Stage 2 rows, Stage 1 rows)."""
+    """Run each experiment once per seed.
+
+    Returns (Stage 2 rows, Stage 1 rows, Stage 2 test scores per issue area).
+    """
     device = pick_device(device)
     print(f"device: {device}")
     tables, data, pairs = load_data()
     RESULTS.mkdir(exist_ok=True)
-    stage2_rows, stage1_rows, histories = [], [], {}
+    stage2_rows, stage1_rows, issue_scores, histories = [], [], [], {}
 
     def log_history(name, hist):
         histories.setdefault(name, []).append(hist)
@@ -547,20 +552,11 @@ def run(names, epochs=20, batch_size=1024, patience=3, device=None,
             else:
                 decisions, threshold, seconds, _ = stage2_decisions(name)
                 stage2_rows += score_rows(name, data, decisions, threshold, seconds, seed)
+                issue_scores += issue_rows(name, data["test"].votes, decisions["test"], seed)
 
     for name, hists in histories.items():
         pd.concat(hists, ignore_index=True).to_csv(RESULTS / f"{name}.csv", index=False)
-    return pd.DataFrame(stage2_rows), pd.DataFrame(stage1_rows)
-
-
-def save(results, path, key):
-    """Write results, keeping earlier rows for experiments not re-run."""
-    if path.exists() and len(results):
-        old = pd.read_csv(path)
-        results = pd.concat([old[~old[key].isin(results[key])], results], ignore_index=True)
-    if len(results):
-        results.to_csv(path, index=False)
-    return results
+    return pd.DataFrame(stage2_rows), pd.DataFrame(stage1_rows), pd.DataFrame(issue_scores)
 
 
 def mean_std(df, index, columns, value):
@@ -591,7 +587,7 @@ if __name__ == "__main__":
 
     names = a.experiment or [*STAGE1, *EXPERIMENTS, *HYBRIDS]
     seeds = [SEED + i for i in range(a.seeds)]
-    stage2, stage1 = run(names, a.epochs, a.batch_size, a.patience, a.device, a.stage1,
+    stage2, stage1, by_issue = run(names, a.epochs, a.batch_size, a.patience, a.device, a.stage1,
                          a.stage1_epochs, a.stage1_patience, seeds)
     over = f" (mean ± std over {a.seeds} seeds)" if a.seeds > 1 else ""
 
@@ -605,6 +601,7 @@ if __name__ == "__main__":
             print(f"\n{metric}:\n{table.to_string()}")
     if len(stage2):
         stage2 = save(stage2, RESULTS / "summary.csv", "baseline")
+        save(by_issue, RESULTS / "by_issue.csv", "baseline")
         print(f"\nStage 2 macro-F1, test split{over}")
         print(mean_std(stage2.query("split == 'test'"), ["baseline"], ["subset"],
                        "macro_f1").to_string())

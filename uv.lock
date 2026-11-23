@@ -755,6 +755,7 @@ name = "dl-final-project"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "matplotlib" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "openpyxl" },
@@ -770,7 +771,6 @@ audio = [
     { name = "faster-whisper" },
     { name = "librosa", version = "0.11.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "librosa", version = "1.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "matplotlib" },
     { name = "pycountry" },
 ]
 
@@ -784,7 +784,7 @@ requires-dist = [
     { name = "datasets", marker = "extra == 'audio'", specifier = ">=3.0" },
     { name = "faster-whisper", marker = "extra == 'audio'", specifier = ">=1.1" },
     { name = "librosa", marker = "extra == 'audio'", specifier = ">=0.10" },
-    { name = "matplotlib", marker = "extra == 'audio'", specifier = ">=3.9" },
+    { name = "matplotlib", specifier = ">=3.9" },
     { name = "numpy", specifier = ">=2.4.6" },
     { name = "openpyxl", specifier = ">=3.1.5" },
     { name = "pandas", specifier = ">=3.1.1" },

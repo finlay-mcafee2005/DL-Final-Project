@@ -27,7 +27,8 @@ Usage:
     uv run python comparison.py                         # all baselines
     uv run python comparison.py --baseline last_session_vote
     uv run python comparison.py --rf-sample 50000       # faster random forest
-Writes results/baselines.csv.
+Writes results/baselines.csv, and test-split scores per issue area to
+results/by_issue.csv (shared with un_contrastive.py).
 """
 
 import argparse
@@ -44,7 +45,7 @@ from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
 from sklearn.preprocessing import StandardScaler
 
 from embed_cache import lookup, resolution_text
-from un_data import SEED, load_processed, load_split
+from un_data import ISSUES, SEED, load_processed, load_split
 
 RESULTS = Path(__file__).parent / "results"
 EVAL_SPLITS = ["val", "test", "test_heldout"]
@@ -66,6 +67,40 @@ def subsets(votes):
     return [("all", np.ones(len(votes), bool)),
             ("contested", votes["contested"].to_numpy(bool)),
             ("no_history", votes["last_vote"].isna().to_numpy())]
+
+
+def issue_masks(votes):
+    """{issue: mask} for each issue area, plus "other" (resolutions with no issue tag)."""
+    tags = votes[[f"issue_{k}" for k in ISSUES]].to_numpy(bool)
+    masks = {k: tags[:, i] for i, k in enumerate(ISSUES)}
+    masks["other"] = ~tags.any(axis=1)
+    return masks
+
+
+def issue_rows(name, votes, decisions, seed=None, split="test"):
+    """Macro-F1 per issue area on one split, over all and over contested votes.
+
+    `decisions` are the model's Yes/No calls (1/0) for every vote in `votes`.
+    """
+    y = target(votes)
+    contested = votes["contested"].to_numpy(bool)
+    rows = []
+    for issue, mask in issue_masks(votes).items():
+        for subset, m in [("all", mask), ("contested", mask & contested)]:
+            rows.append({"baseline": name, "seed": seed, "split": split, "issue": issue,
+                         "subset": subset, "n": int(m.sum()),
+                         **scores(y[m], np.asarray(decisions)[m])})
+    return rows
+
+
+def save(results, path, key="baseline"):
+    """Write results, keeping earlier rows for names not in `results`."""
+    if path.exists() and len(results):
+        old = pd.read_csv(path)
+        results = pd.concat([old[~old[key].isin(results[key])], results], ignore_index=True)
+    if len(results):
+        results.to_csv(path, index=False)
+    return results
 
 
 def pair_features(S, R):
@@ -167,14 +202,16 @@ def evaluate(name, data, probs, threshold, seconds):
 
 
 def run(names, **kwargs):
+    """Returns (scores per split and subset, scores per issue area on test)."""
     data = load_all()
-    rows = []
+    rows, by_issue = [], []
     for name in names:
         print(f"running {name}")
         t0 = time.time()
         probs, threshold = BASELINES[name](data, **kwargs)
         rows += evaluate(name, data, probs, threshold, time.time() - t0)
-    return pd.DataFrame(rows)
+        by_issue += issue_rows(name, data["test"][1], probs["test"] >= threshold)
+    return pd.DataFrame(rows), pd.DataFrame(by_issue)
 
 
 if __name__ == "__main__":
@@ -186,13 +223,11 @@ if __name__ == "__main__":
     a = p.parse_args()
 
     names = a.baseline or list(BASELINES)
-    results = run(names, rf_sample=a.rf_sample)
+    results, by_issue = run(names, rf_sample=a.rf_sample)
     RESULTS.mkdir(exist_ok=True)
     out = RESULTS / "baselines.csv"
-    if a.baseline and out.exists():  # keep earlier results for baselines not re-run
-        old = pd.read_csv(out)
-        results = pd.concat([old[~old["baseline"].isin(names)], results], ignore_index=True)
-    results.to_csv(out, index=False)
+    results = save(results, out)  # keeps earlier results for baselines not re-run
+    save(by_issue, RESULTS / "by_issue.csv")
 
     table = results.pivot_table(index="baseline", columns=["split", "subset"],
                                 values="macro_f1", sort=False).round(3)

@@ -12,7 +12,8 @@ import pytest
 import torch
 
 import audio_tone
-from comparison import EVAL_SPLITS, always_yes, best_threshold, last_session_vote, scores, target
+import plots
+from comparison import EVAL_SPLITS, issue_rows, always_yes, best_threshold, last_session_vote, scores, target
 from embed_cache import DEFAULT_MODEL, cache_dir, chunk_text, load_embeddings
 from un_contrastive import (EXPERIMENTS, HYBRIDS, STAGE1, hybrid_decisions, mean_std, PairData, clip_logits, clip_loss, history_onehot,
                             retrieval, train, train_contrastive)
@@ -325,3 +326,37 @@ def test_scores_are_standardised_within_each_speech():
     z = audio_tone.zscore_within(df, ["x"])["x"]
     assert np.allclose(z[:3], z[3:])  # same pattern, different scale -> same z
     assert np.allclose(z.groupby(df["speech_id"]).mean(), 0)
+
+
+# ---------------------------------------------------------------- issue scores and figures
+
+def test_issue_rows_cover_every_issue_and_other(splits):
+    votes = splits["test"][1]
+    rows = pd.DataFrame(issue_rows("always_yes", votes, np.ones(len(votes))))
+    assert set(rows["issue"]) == set(ISSUES) | {"other"}
+    contested = rows[rows["subset"] == "contested"]
+    assert (contested["n"] <= rows[rows["subset"] == "all"]["n"].to_numpy()).all()
+    assert (rows["balanced_acc"] == 0.5).all()  # always Yes is chance on every issue
+
+
+def test_figures_are_drawn_from_minimal_results(tmp_path, monkeypatch):
+    results, figures = tmp_path / "results", tmp_path / "figures"
+    results.mkdir()
+    monkeypatch.setattr(plots, "RESULTS", results)
+    monkeypatch.setattr(plots, "FIGURES", figures)
+    for name in ["contrastive_relu_adam", "probe_no_contrastive", "contrastive_probe"]:
+        pd.DataFrame({"epoch": [1, 2, 3], "train_loss": [3, 2, 1.0], "val_loss": [3, 2.5, 2.6],
+                      "seed": 42}).to_csv(results / f"{name}.csv", index=False)
+    pd.DataFrame({"experiment": ["contrastive_relu_adam"] * 2, "seed": [42, 43],
+                  "split": "test", "top1": [0.05, 0.06], "top10": [0.28, 0.30],
+                  "chance_top1": 0.006, "chance_top10": 0.056}).to_csv(results / "retrieval.csv", index=False)
+    rows = [{"baseline": b, "seed": 42, "split": "test", "subset": s, "macro_f1": f}
+            for b, f in [("last_session_vote", 0.9), ("contrastive_probe", 0.75)]
+            for s in ["all", "contested", "no_history"]]
+    pd.DataFrame(rows).to_csv(results / "summary.csv", index=False)
+    pd.DataFrame([{**r, "issue": i, "n": 100} for r in rows if r["subset"] == "contested"
+                  for i in ["nuclear", "other"]]).to_csv(results / "by_issue.csv", index=False)
+    for make in plots.FIGURES_ALL:
+        make()
+    assert {f.name for f in figures.glob("*.png")} == {
+        "loss_curves.png", "retrieval.png", "results.png", "by_issue.png"}
