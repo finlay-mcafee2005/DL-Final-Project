@@ -8,7 +8,8 @@ interpreter's) and the English-trained text and voice models apply.
 
 For each speech:
   1. download the floor audio (cached in data/audio/)
-  2. transcribe with Whisper (faster-whisper) and merge its segments into passages of
+  2. transcribe with Whisper (faster-whisper), skipping any speech Whisper hears as
+     not English (the corpus language field is not always right), and merge its segments into passages of
      5-20 seconds that end on a sentence boundary where possible
   3. score each passage twice:
        text   sentiment of the words: P(positive) - P(negative), from -1 to 1
@@ -16,6 +17,10 @@ For each speech:
               fine-tuned on MSP-Podcast; roughly 0 to 1)
      plus delivery features: pitch level and variation (semitones), loudness (dB),
      share of pauses, speaking rate (words per second)
+     Caveat: the voice model's *valence* is known to draw partly on what is being said
+     (its authors report it is sensitive to linguistic content), so a correlation
+     between text sentiment and vocal valence overstates how much the voice alone
+     agrees with the words. Arousal and dominance are mostly acoustic.
   4. z-score every measure within the speech, so passages are compared with the same
      speaker's average (this removes differences in voice, microphone and style)
 
@@ -35,7 +40,7 @@ Usage (needs the audio extra: uv sync --extra audio):
     uv run python audio_tone.py                       # every English-delivered speech
     uv run python audio_tone.py --whisper-model medium.en --device mps
 Per-speech results are cached in results/audio/passages/, so a stopped run resumes
-where it left off (--redo recomputes them).
+where it left off (--redo recomputes them; --analyze-only reruns just the analysis).
 """
 
 import argparse
@@ -144,6 +149,20 @@ def merge_segments(segments, min_s=MIN_SECONDS, max_s=MAX_SECONDS):
     return passages
 
 
+# The floor audio also carries the Assembly President introducing and thanking each
+# speaker, in a different voice (often over applause). Those passages are dropped
+# before scoring: compared with the leader's own average, they look extreme.
+CHAIR_PATTERN = (r"give the floor|request protocol|escort (?:his|her) excellency"
+                 r"|will hear an? (?:address|statement)|i would like to introduce"
+                 r"|on behalf of the general assembly|from the rostrum"
+                 r"|for the statement (?:he|she) has just made|^\W*the floor\W*$")
+
+
+def is_chair(texts):
+    """True for passages spoken by the Assembly President (introductions, thanks)."""
+    return pd.Series(list(texts)).str.lower().str.contains(CHAIR_PATTERN, regex=True).to_numpy()
+
+
 def issue_tags(texts):
     """Boolean issue_<area> columns for each passage (same keywords as un_data)."""
     lower = pd.Series(list(texts)).str.lower()
@@ -155,13 +174,47 @@ def issue_tags(texts):
 # Each scorer is a plain callable, so tests can swap in stand-ins.
 
 class Whisper:
-    def __init__(self, name=WHISPER_MODEL):
-        from faster_whisper import WhisperModel
-        self.model = WhisperModel(name, device="cpu", compute_type="int8")
+    """faster-whisper transcription, after a language check.
 
-    def __call__(self, path):
-        segments, _ = self.model.transcribe(str(path), language="en", vad_filter=True)
-        return [{"start": s.start, "end": s.end, "text": s.text} for s in segments]
+    Returns (segments, detected language, share of checked clips in that language).
+    The corpus language field is not always right, and forcing English on a speech given
+    in another language yields a garbled transcript. The check uses a small multilingual
+    model (English-only models such as small.en always report English) on three 30-second
+    clips from inside the speech: the first seconds are usually the Assembly President
+    introducing the speaker, in English, whatever language the speaker then uses.
+    """
+
+    DETECT_MODEL = "base"
+    CLIPS_AT = (0.25, 0.5, 0.75)
+
+    def __init__(self, name=WHISPER_MODEL, device="cpu"):
+        from faster_whisper import WhisperModel
+        try:  # Apple-silicon (MPS) backend is experimental in CTranslate2; fall back to CPU
+            self.model = WhisperModel(name, device=device,
+                                      compute_type="float16" if device == "mps" else "int8")
+        except (ValueError, RuntimeError) as err:
+            print(f"  Whisper could not use {device} ({err}); using cpu")
+            self.model = WhisperModel(name, device="cpu", compute_type="int8")
+        self.detector = WhisperModel(self.DETECT_MODEL, device="cpu", compute_type="int8")
+
+    def language(self, signal):
+        """Majority language over clips at CLIPS_AT, and the share of clips agreeing."""
+        clip = 30 * SR
+        votes = []
+        for at in self.CLIPS_AT:
+            start = max(0, min(int(at * len(signal)) - clip // 2, len(signal) - clip))
+            lang, _, _ = self.detector.detect_language(audio=signal[start:start + clip])
+            votes.append(lang)
+        top = max(set(votes), key=votes.count)
+        return top, votes.count(top) / len(votes)
+
+    def __call__(self, path, signal=None):
+        signal = load_audio(path) if signal is None else signal
+        lang, share = self.language(signal)
+        if lang != "en":
+            return [], lang, share
+        segments, _ = self.model.transcribe(signal, language="en", vad_filter=True)
+        return [{"start": s.start, "end": s.end, "text": s.text} for s in segments], lang, share
 
 
 def emotion_model_class():
@@ -196,7 +249,15 @@ def emotion_model_class():
 
 
 class VoiceEmotion:
-    """Arousal, dominance, valence from audeering's wav2vec2 model (outputs in that order)."""
+    """Arousal, dominance, valence from audeering's wav2vec2 model (outputs in that order).
+
+    A clip is scored in windows of at most WINDOW_SECONDS and the windows are averaged
+    (weighted by length): the model's memory grows quickly with clip length, and a long
+    passage can exhaust GPU memory. If the GPU still runs out, the model moves to the
+    CPU for the rest of the run.
+    """
+
+    WINDOW_SECONDS = 10.0
 
     def __init__(self, name=EMOTION_MODEL, device="cpu"):
         import torch
@@ -205,11 +266,36 @@ class VoiceEmotion:
         self.extractor = Wav2Vec2FeatureExtractor.from_pretrained(name)
         self.model = emotion_model_class().from_pretrained(name).to(device).eval()
 
-    def __call__(self, signal):
-        x = self.extractor(signal, sampling_rate=SR, return_tensors="pt").input_values
+    def windows(self, signal):
+        size = int(self.WINDOW_SECONDS * SR)
+        n = max(1, int(np.ceil(len(signal) / size)))
+        return [w for w in np.array_split(signal, n) if len(w) >= SR // 2]
+
+    def _score(self, window):
+        x = self.extractor(window, sampling_rate=SR, return_tensors="pt").input_values
         with self.torch.no_grad():
-            arousal, dominance, valence = self.model(x.to(self.device))[0].cpu().tolist()
-        return {"arousal": arousal, "dominance": dominance, "valence": valence}
+            out = self.model(x.to(self.device))[0].cpu().numpy()
+        if self.device == "mps":
+            self.torch.mps.empty_cache()
+        return out
+
+    def __call__(self, signal):
+        scores, weights = [], []
+        for w in self.windows(signal):
+            try:
+                scores.append(self._score(w))
+            except (RuntimeError, MemoryError) as err:  # torch.OutOfMemoryError is a RuntimeError
+                if self.device == "cpu" or "memory" not in str(err).lower():
+                    raise
+                print(f"  voice model ran out of {self.device} memory; moving it to cpu")
+                self.device = "cpu"
+                self.model.to("cpu")
+                if self.torch.backends.mps.is_available():
+                    self.torch.mps.empty_cache()
+                scores.append(self._score(w))
+            weights.append(len(w))
+        arousal, dominance, valence = np.average(np.array(scores), axis=0, weights=weights)
+        return {"arousal": float(arousal), "dominance": float(dominance), "valence": float(valence)}
 
 
 class TextSentiment:
@@ -283,25 +369,51 @@ def zscore_within(df, cols, by="speech_id"):
 
 
 def process(corpus, transcribe, voice, text, redo=False, log=print):
-    """Score every speech in `corpus` (cached per speech). Returns all passages."""
+    """Score every speech in `corpus` (cached per speech). Returns all passages.
+
+    Speeches Whisper detects as not English are skipped and listed in skipped.csv.
+    A cached file from before the language check was fixed is recomputed.
+    """
     cache = OUT / "passages"
     cache.mkdir(parents=True, exist_ok=True)
-    frames = []
+    frames, skipped = [], []
     for i, row in enumerate(corpus.itertuples(), 1):
         path = cache / f"{row.speech_id}.csv"
         if path.exists() and not redo:
-            frames.append(pd.read_csv(path))
-            continue
+            cached = pd.read_csv(path)
+            if "detected_language" in cached:
+                if len(cached):
+                    frames.append(cached)
+                else:
+                    skipped.append({"speech_id": row.speech_id, "country": row.country_name,
+                                    "detected_language": "not en (cached)"})
+                continue
         t0 = time.time()
         audio = fetch_audio(row.audio_floor)
         signal = load_audio(audio)
-        df = score_speech(signal, transcribe(audio), voice, text)
+        t1 = time.time()
+        segments, lang, share = transcribe(audio, signal)
+        t2 = time.time()
+        if lang != "en":
+            log(f"  [{i}/{len(corpus)}] {row.speech_id} {row.country_name}: skipped, Whisper"
+                f" hears {lang!r} in {share:.0%} of checked clips, not English")
+            pd.DataFrame(columns=["speech_id", "country", "detected_language"]).to_csv(path, index=False)
+            skipped.append({"speech_id": row.speech_id, "country": row.country_name,
+                            "detected_language": lang, "share_of_clips": share})
+            continue
+        df = score_speech(signal, segments, voice, text)
         df.insert(0, "speech_id", row.speech_id)
         df.insert(1, "country", row.country_name)
+        df["detected_language"] = lang
         df.to_csv(path, index=False)
         frames.append(df)
+        minutes = len(signal) / SR / 60
         log(f"  [{i}/{len(corpus)}] {row.speech_id} {row.country_name}: {len(df)} passages,"
-            f" {len(signal) / SR / 60:.0f} min of audio ({time.time() - t0:.0f}s)")
+            f" {minutes:.0f} min of audio | download {t1 - t0:.0f}s, transcribe {t2 - t1:.0f}s,"
+            f" score {time.time() - t2:.0f}s")
+    if skipped:
+        pd.DataFrame(skipped).to_csv(OUT / "skipped.csv", index=False)
+        log(f"  skipped {len(skipped)} speeches not in English (results/audio/skipped.csv)")
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
@@ -453,7 +565,9 @@ def plot_tone_vs_votes(speeches, path, measure="arousal", n_labels=6):
 # ---------------------------------------------------------------- run
 
 def analyze(passages, log=print):
-    passages = add_z_and_issues(passages)
+    chair = is_chair(passages["text"])
+    log(f"dropped {chair.sum()} passages spoken by the Assembly President")
+    passages = add_z_and_issues(passages[~chair].reset_index(drop=True))
     speeches = speech_summary(passages)
     outputs = {"passages": passages, "speeches": speeches,
                "correlations": correlations(passages), "mismatches": mismatches(passages),
@@ -473,7 +587,15 @@ def analyze(passages, log=print):
     return outputs
 
 
+def analyze_cached():
+    """Rerun the analysis on the cached per-speech results, without any models."""
+    frames = [pd.read_csv(f) for f in sorted((OUT / "passages").glob("*.csv"))]
+    passages = pd.concat([f for f in frames if len(f)], ignore_index=True)
+    return analyze(passages)
+
+
 def main(limit=None, whisper_model=WHISPER_MODEL, device="cpu", redo=False):
+    """`device` is used for all three models (Whisper falls back to cpu if it must)."""
     OUT.mkdir(parents=True, exist_ok=True)
     corpus = load_corpus()
     known = set(pd.concat([load_split("test")[0], load_split("test_heldout")[0]])["speech_id"])
@@ -484,7 +606,7 @@ def main(limit=None, whisper_model=WHISPER_MODEL, device="cpu", redo=False):
     if limit:
         english = english.head(limit)
     print("loading models (first run downloads them)")
-    passages = process(english, Whisper(whisper_model), VoiceEmotion(device=device),
+    passages = process(english, Whisper(whisper_model, device), VoiceEmotion(device=device),
                        TextSentiment(device=device), redo=redo)
     return analyze(passages)
 
@@ -494,7 +616,12 @@ if __name__ == "__main__":
     p.add_argument("--limit", type=int, help="only the first N English-delivered speeches")
     p.add_argument("--whisper-model", default=WHISPER_MODEL,
                    help="faster-whisper model, e.g. small.en (default), medium.en")
-    p.add_argument("--device", default="cpu", help="cpu or mps for the voice and text models")
+    p.add_argument("--device", default="cpu", help="cpu or mps (Apple silicon) for all models")
     p.add_argument("--redo", action="store_true", help="recompute cached speeches")
+    p.add_argument("--analyze-only", action="store_true",
+                   help="skip audio processing; rerun the analysis on cached speeches")
     a = p.parse_args()
-    main(a.limit, a.whisper_model, a.device, a.redo)
+    if a.analyze_only:
+        analyze_cached()
+    else:
+        main(a.limit, a.whisper_model, a.device, a.redo)
