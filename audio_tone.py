@@ -17,7 +17,9 @@ For each speech:
   2. detect the speech's language with Whisper (the corpus language field is not always
      right), transcribe it in that language (in "en" mode, speeches that are not English
      are skipped), and merge its segments into passages of 5-20 seconds that end on a
-     sentence boundary where possible. In a speech that is not in English, passages
+     sentence boundary where possible. Passages not in English are machine-translated
+     (opus-mt-mul-en) into text_en, used only to tag issues with the English keywords.
+     In a speech that is not in English, passages
      Whisper hears in another language are dropped: they are mostly the Assembly President
      introducing or thanking the speaker in English
   3. score each passage twice:
@@ -89,6 +91,9 @@ WHISPER_MODEL_EN = "small.en"      # English-only mode
 EMOTION_MODEL = "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim"
 TEXT_MODEL = "cardiffnlp/twitter-xlm-roberta-base-sentiment"         # multilingual
 TEXT_MODEL_EN = "cardiffnlp/twitter-roberta-base-sentiment-latest"   # English-only mode
+# Issue tags use the English keyword patterns from un_data, so passages in other languages
+# are machine-translated to English (text_en) for tagging only; sentiment uses the original.
+TRANSLATE_MODEL = "Helsinki-NLP/opus-mt-mul-en"
 
 # Sentence-final punctuation, including Chinese/Japanese full-width marks and the Arabic
 # question mark, so passages can end on a sentence boundary in any language.
@@ -199,7 +204,9 @@ def is_chair(texts):
 
 
 def issue_tags(texts):
-    """Boolean issue_<area> columns for each passage (same keywords as un_data)."""
+    """Boolean issue_<area> columns for each passage (same keywords as un_data).
+
+    Pass English text: for passages in other languages, use the text_en column."""
     lower = pd.Series(list(texts)).str.lower()
     return pd.DataFrame({f"issue_{k}": lower.str.contains(p, regex=True)
                          for k, p in ISSUE_PATTERNS.items()})
@@ -368,6 +375,27 @@ class TextSentiment:
         return out
 
 
+class Translator:
+    """Machine translation to English (Marian opus-mt-mul-en), used only for issue tags."""
+
+    def __init__(self, name=TRANSLATE_MODEL, device="cpu"):
+        import torch
+        from transformers import MarianMTModel, MarianTokenizer
+        self.torch, self.device = torch, device
+        self.tokenizer = MarianTokenizer.from_pretrained(name)
+        self.model = MarianMTModel.from_pretrained(name).to(device).eval()
+
+    def __call__(self, texts, batch_size=16):
+        out = []
+        for i in range(0, len(texts), batch_size):
+            batch = self.tokenizer(texts[i:i + batch_size], padding=True, truncation=True,
+                                   max_length=256, return_tensors="pt").to(self.device)
+            with self.torch.no_grad():
+                ids = self.model.generate(**batch, max_new_tokens=256)
+            out += self.tokenizer.batch_decode(ids, skip_special_tokens=True)
+        return out
+
+
 def load_audio(path):
     from faster_whisper.audio import decode_audio
     return decode_audio(str(path), sampling_rate=SR)
@@ -430,14 +458,25 @@ def _rescore_text(cached, text, text_name):
     return cached
 
 
+def _add_text_en(df, translate, lang):
+    """text_en: the passage in English, for issue tagging (a copy of text if already English)."""
+    if "text_en" in df and df["text_en"].notna().all():
+        return df
+    texts = df["text"].fillna("").tolist()
+    df["text_en"] = texts if lang == "en" or translate is None else translate(texts)
+    return df
+
+
 def process(corpus, transcribe, voice, text, redo=False, log=print, english_only=False,
-            reuse=None):
+            reuse=None, translate=None):
     """Score every speech in `corpus` (cached per speech). Returns all passages.
 
     english_only: speeches Whisper detects as not English are skipped and listed in
     skipped.csv. Otherwise every speech is transcribed in its own language.
     reuse: another passages folder to take already-processed speeches from (their text
     sentiment is rescored if it came from a different text model).
+    translate: callable list[str] -> list[str] into English, for issue tags of passages in
+    other languages (stored as text_en). None keeps text_en = text.
     A cached file from before the language check was fixed is recomputed.
     """
     cache = OUT / "passages"
@@ -453,8 +492,12 @@ def process(corpus, transcribe, voice, text, redo=False, log=print, english_only
             if cached is not None and "detected_language" in cached:
                 if len(cached):
                     before = cached.get("text_model")
+                    had_en = "text_en" in cached
                     cached = _rescore_text(cached, text, text_name)
-                    if source != path or before is None or not cached["text_model"].equals(before):
+                    lang = str(cached["detected_language"].iloc[0])
+                    cached = _add_text_en(cached, translate, lang)
+                    if (source != path or before is None or not had_en
+                            or not cached["text_model"].equals(before)):
                         cached.to_csv(path, index=False)
                     frames.append(cached)
                     continue
@@ -494,6 +537,7 @@ def process(corpus, transcribe, voice, text, redo=False, log=print, english_only
         df.insert(1, "country", row.country_name)
         df["detected_language"] = lang
         df["text_model"] = text_name
+        df = _add_text_en(df, translate, lang)
         df.to_csv(path, index=False)
         frames.append(df)
         minutes = len(signal) / SR / 60
@@ -511,8 +555,10 @@ def process(corpus, transcribe, voice, text, redo=False, log=print, english_only
 
 def add_z_and_issues(passages):
     z = zscore_within(passages, MEASURES).add_prefix("z_")
+    english = (passages["text_en"].fillna(passages["text"]) if "text_en" in passages
+               else passages["text"])
     return pd.concat([passages.reset_index(drop=True), z.reset_index(drop=True),
-                      issue_tags(passages["text"])], axis=1)
+                      issue_tags(english)], axis=1)
 
 
 def correlations(passages):
@@ -729,7 +775,8 @@ def main(limit=None, whisper_model=None, device="cpu", redo=False, languages="al
                        VoiceEmotion(device=device),
                        TextSentiment(TEXT_MODEL_EN if english_only else TEXT_MODEL, device=device),
                        redo=redo, english_only=english_only,
-                       reuse=None if english_only else OUT_EN / "passages")
+                       reuse=None if english_only else OUT_EN / "passages",
+                       translate=None if english_only else Translator(device=device))
     return analyze(passages)
 
 

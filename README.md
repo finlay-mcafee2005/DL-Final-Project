@@ -123,6 +123,7 @@ The headline comparison is **`contrastive_plus_history` vs. `last_session_vote`*
 | `un_contrastive.py` | Experiment functions + shared `train()` loop and logging |
 | `comparison.py` | Classical baselines |
 | `audio_tone.py` | Audio case study: tone of voice vs. text sentiment in the 2025 General Debate |
+| `balance_passages.py` | Balanced 5,000-passage sample from the audio study (equal per issue and per country) |
 | `plots.py` | Report figures (loss curves, retrieval, results, accuracy by issue) → `report/figures/` |
 | `test_un.py` | Shape checks, no NaNs, no time leakage, beats `last_session_vote` |
 | `results/` | Per-run training history (CSV) and a summary table |
@@ -168,6 +169,8 @@ uv run python audio_tone.py --device mps      # every English-delivered speech
 ```
 
 Results go to `results/audio/`. Audio downloads to `data/audio/` (not tracked in git).
+
+**All languages and a balanced sample.** `uv run python audio_tone.py --device mps` now uses every 2025 speech, in whatever language it was given (`--languages en` reruns the English-only study). Whisper transcribes each speech in its own language; text sentiment uses a multilingual model; passages not in English are machine-translated only so the English issue keywords can tag them; results go to `results/audio_all/`. `uv run python balance_passages.py` then draws 5,000 passages with equal numbers per issue (plus "other") and, within each issue, an equal share per country, and reruns the text-vs-voice and by-issue analyses on that sample. Issues with fewer passages than an equal share contribute all they have. The voice model was trained on English speech, so its scores are less reliable for other languages.
 
 ---
 
