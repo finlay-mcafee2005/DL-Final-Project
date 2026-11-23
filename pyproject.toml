@@ -19,6 +19,8 @@ audio = [
     "faster-whisper>=1.1",
     "librosa>=0.10",
     "pycountry>=24.6",
+    "protobuf>=4.25",      # XLM-RoBERTa tokenizer (multilingual text sentiment)
+    "sentencepiece>=0.2",
 ]
 
 [dependency-groups]
