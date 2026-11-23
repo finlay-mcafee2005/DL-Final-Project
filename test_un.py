@@ -325,3 +325,16 @@ def test_scores_are_standardised_within_each_speech():
     z = audio_tone.zscore_within(df, ["x"])["x"]
     assert np.allclose(z[:3], z[3:])  # same pattern, different scale -> same z
     assert np.allclose(z.groupby(df["speech_id"]).mean(), 0)
+
+
+def test_assembly_president_passages_are_recognised():
+    chair = ["I now give the floor to His Excellency Lok Bahadur Thapa, Chair of Delegation of Nepal.",
+             "I request protocol to escort His Excellency and invite him to address the Assembly.",
+             "As the Assembly will hear an address by His Excellency Peter Pavel, President of the Czech Republic,",
+             "On behalf of the General Assembly, I wish to thank the President for the statement he has just made.",
+             "the floor."]
+    leader = ["Your Excellency Mr. Antonio Guterres, Secretary General of the United Nations.",
+              "We will not falter and we will not rest until we bring all of you home.",
+              "I thank the President for giving me the floor to address this Assembly."]
+    assert audio_tone.is_chair(chair).all()
+    assert not audio_tone.is_chair(leader).any()

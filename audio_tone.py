@@ -40,7 +40,7 @@ Usage (needs the audio extra: uv sync --extra audio):
     uv run python audio_tone.py                       # every English-delivered speech
     uv run python audio_tone.py --whisper-model medium.en --device mps
 Per-speech results are cached in results/audio/passages/, so a stopped run resumes
-where it left off (--redo recomputes them).
+where it left off (--redo recomputes them; --analyze-only reruns just the analysis).
 """
 
 import argparse
@@ -147,6 +147,20 @@ def merge_segments(segments, min_s=MIN_SECONDS, max_s=MAX_SECONDS):
     for p in passages:
         p["text"] = p["text"].strip()
     return passages
+
+
+# The floor audio also carries the Assembly President introducing and thanking each
+# speaker, in a different voice (often over applause). Those passages are dropped
+# before scoring: compared with the leader's own average, they look extreme.
+CHAIR_PATTERN = (r"give the floor|request protocol|escort (?:his|her) excellency"
+                 r"|will hear an? (?:address|statement)|i would like to introduce"
+                 r"|on behalf of the general assembly|from the rostrum"
+                 r"|for the statement (?:he|she) has just made|^\W*the floor\W*$")
+
+
+def is_chair(texts):
+    """True for passages spoken by the Assembly President (introductions, thanks)."""
+    return pd.Series(list(texts)).str.lower().str.contains(CHAIR_PATTERN, regex=True).to_numpy()
 
 
 def issue_tags(texts):
@@ -551,7 +565,9 @@ def plot_tone_vs_votes(speeches, path, measure="arousal", n_labels=6):
 # ---------------------------------------------------------------- run
 
 def analyze(passages, log=print):
-    passages = add_z_and_issues(passages)
+    chair = is_chair(passages["text"])
+    log(f"dropped {chair.sum()} passages spoken by the Assembly President")
+    passages = add_z_and_issues(passages[~chair].reset_index(drop=True))
     speeches = speech_summary(passages)
     outputs = {"passages": passages, "speeches": speeches,
                "correlations": correlations(passages), "mismatches": mismatches(passages),
@@ -569,6 +585,13 @@ def analyze(passages, log=print):
     log(outputs["tone_vs_votes"].round(3).to_string(index=False))
     log(f"\nwritten to {OUT}")
     return outputs
+
+
+def analyze_cached():
+    """Rerun the analysis on the cached per-speech results, without any models."""
+    frames = [pd.read_csv(f) for f in sorted((OUT / "passages").glob("*.csv"))]
+    passages = pd.concat([f for f in frames if len(f)], ignore_index=True)
+    return analyze(passages)
 
 
 def main(limit=None, whisper_model=WHISPER_MODEL, device="cpu", redo=False):
@@ -595,5 +618,10 @@ if __name__ == "__main__":
                    help="faster-whisper model, e.g. small.en (default), medium.en")
     p.add_argument("--device", default="cpu", help="cpu or mps (Apple silicon) for all models")
     p.add_argument("--redo", action="store_true", help="recompute cached speeches")
+    p.add_argument("--analyze-only", action="store_true",
+                   help="skip audio processing; rerun the analysis on cached speeches")
     a = p.parse_args()
-    main(a.limit, a.whisper_model, a.device, a.redo)
+    if a.analyze_only:
+        analyze_cached()
+    else:
+        main(a.limit, a.whisper_model, a.device, a.redo)
