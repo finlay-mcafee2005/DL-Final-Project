@@ -20,8 +20,8 @@ For each speech:
      sentence boundary where possible. Passages not in English are machine-translated
      (opus-mt-mul-en) into text_en, used only to tag issues with the English keywords.
      In a speech that is not in English, passages
-     Whisper hears in another language are dropped: they are mostly the Assembly President
-     introducing or thanking the speaker in English
+     Whisper hears as English are dropped: they are the Assembly President introducing or
+     thanking the speaker
   3. score each passage twice:
        text   sentiment of the words: P(positive) - P(negative), from -1 to 1
        voice  arousal, dominance and valence of the voice (audeering wav2vec2 model
@@ -195,7 +195,11 @@ def merge_segments(segments, min_s=MIN_SECONDS, max_s=MAX_SECONDS):
 CHAIR_PATTERN = (r"give the floor|request protocol|escort (?:his|her) excellency"
                  r"|will hear an? (?:address|statement)|i would like to introduce"
                  r"|on behalf of the general assembly|from the rostrum"
-                 r"|for the statement (?:he|she) has just made|^\W*the floor\W*$")
+                 r"|for the statement (?:he|she) has just made|^\W*the floor\W*$"
+                 # also as they come out of transcription in another language + translation
+                 r"|will now hear|\bthe assembly will (?:now )?(?:hear|heed|be)\b"
+                 r"|hear (?:the|an|and) (?:address|statement) by"
+                 r"|address by (?:his|her|your) excellen")
 
 
 def is_chair(texts):
@@ -522,8 +526,11 @@ def process(corpus, transcribe, voice, text, redo=False, log=print, english_only
         dropped = [0]
         keep = None
         if lang != "en" and hasattr(transcribe, "language_of"):
-            def keep(clip, lang=lang):
-                ok = transcribe.language_of(clip) == lang
+            def keep(clip):
+                # The Assembly President introduces and thanks speakers in English. Drop only
+                # passages heard as English: a short clip in the speaker's language is often
+                # misheard as a related one (Catalan as Spanish), so "!= lang" drops real speech.
+                ok = transcribe.language_of(clip) != "en"
                 dropped[0] += not ok
                 return ok
         df = score_speech(signal, segments, voice, text, lang=lang, keep=keep)
@@ -541,7 +548,7 @@ def process(corpus, transcribe, voice, text, redo=False, log=print, english_only
         df.to_csv(path, index=False)
         frames.append(df)
         minutes = len(signal) / SR / 60
-        extra = f", {dropped[0]} off-language passages dropped" if keep is not None else ""
+        extra = f", {dropped[0]} English (President) passages dropped" if keep is not None else ""
         log(f"  [{i}/{len(corpus)}] {row.speech_id} {row.country_name} ({lang}): {len(df)} passages"
             f"{extra}, {minutes:.0f} min of audio | download {t1 - t0:.0f}s, transcribe"
             f" {t2 - t1:.0f}s, score {time.time() - t2:.0f}s")
@@ -719,6 +726,8 @@ def plot_tone_vs_votes(speeches, path, measure="arousal", n_labels=6):
 
 def analyze(passages, log=print):
     chair = is_chair(passages["text"])
+    if "text_en" in passages:  # non-English speeches: the introduction shows up in translation
+        chair = chair | is_chair(passages["text_en"].fillna(""))
     log(f"dropped {chair.sum()} passages spoken by the Assembly President")
     passages = add_z_and_issues(passages[~chair].reset_index(drop=True))
     speeches = speech_summary(passages)
