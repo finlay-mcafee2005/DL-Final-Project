@@ -422,3 +422,17 @@ def test_non_english_passages_are_tagged_from_their_translation():
         df[c] = [0.0, 1.0]
     out = audio_tone.add_z_and_issues(df)
     assert out.loc[0, "issue_middle_east"] and out.loc[1, "issue_nuclear"]
+
+
+# ---------------------------------------------------------------- audio across sessions
+
+def test_floor_audio_urls_and_clip_helpers():
+    import audio_sessions as S
+    assert S.iso2("USA") == "US" and S.iso2("GBR") == "GB"
+    assert S.audio_url(70, 2015, "US").endswith("/mp3/ga/2015/70_US_FL.mp3")
+    clips = S.spaced_clips(np.zeros(S.SR * 100), 6, 30)
+    assert len(clips) == 3 and all(len(c) == 30 * S.SR for c in clips)
+    assert len(S.trim(np.zeros(S.SR * 200))) == 150 * S.SR      # intro and thanks dropped
+    assert len(S.trim(np.zeros(S.SR * 70))) == 70 * S.SR        # too short to trim
+    chunks = S.text_chunks("We support peace. " * 50, max_words=60)
+    assert len(chunks) > 1 and all(c.strip() for c in chunks)
