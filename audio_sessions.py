@@ -175,7 +175,7 @@ def measure_speech(signal, text, voice, sentiment, whisper):
 
 # ---------------------------------------------------------------- run
 
-def process(corpus, voice, sentiment, whisper, redo=False, log=print):
+def process(corpus, voice, sentiment, whisper, redo=False, log=print, keep_audio=False):
     cache = OUT / "speeches"
     cache.mkdir(parents=True, exist_ok=True)
     todo = [r for r in corpus.itertuples()
@@ -202,6 +202,8 @@ def process(corpus, voice, sentiment, whisper, redo=False, log=print):
                     continue
                 log(f"  [{i + 1}/{len(todo)}] {r.speech_id} {r.country} ({row['language']}):"
                     f" {row['minutes']:.0f} min, {time.time() - t0:.0f}s")
+                if not keep_audio:  # ~9 MB per speech; the measures are saved below
+                    path.unlink(missing_ok=True)
             (cache / f"{r.speech_id}.json").write_text(json.dumps(row))
 
 
@@ -315,6 +317,15 @@ def plot_by_session(bs, path, measures=("speech_rate_in_lang", "text_valence", "
 
 
 def analyze(log=print):
+    import warnings
+    with warnings.catch_warnings():
+        # resamples or sessions where a measure is constant give undefined correlations
+        # (NaN); scipy and numpy warn about each one, which buries the results
+        warnings.simplefilter("ignore", RuntimeWarning)
+        return _analyze(log)
+
+
+def _analyze(log=print):
     t = load_tone()
     outputs = {"tone": t, "pooled": pooled(t), "by_session": by_session(t),
                "country_level": country_level(t), "within_country": within_country(t)}
@@ -342,7 +353,7 @@ def parse_sessions(text):
 
 
 def main(sessions=SESSIONS, limit=None, device="cpu", redo=False, shard=None,
-         whisper_model=WHISPER_MODEL):
+         whisper_model=WHISPER_MODEL, keep_audio=False):
     OUT.mkdir(parents=True, exist_ok=True)
     corpus = load_corpus(sessions)
     if shard:
@@ -354,7 +365,7 @@ def main(sessions=SESSIONS, limit=None, device="cpu", redo=False, shard=None,
     print("loading models (first run downloads them)")
     whisper = at.Whisper(whisper_model, device)
     process(corpus, at.VoiceEmotion(device=device), at.TextSentiment(at.TEXT_MODEL_EN, device=device),
-            whisper, redo=redo)
+            whisper, redo=redo, keep_audio=keep_audio)
     return analyze()
 
 
@@ -366,10 +377,13 @@ if __name__ == "__main__":
     p.add_argument("--shard", help="K/N: process every Nth speech starting at K (split across machines)")
     p.add_argument("--whisper-model", default=WHISPER_MODEL)
     p.add_argument("--redo", action="store_true", help="recompute cached speeches")
+    p.add_argument("--keep-audio", action="store_true",
+                   help="keep the downloaded mp3s (by default each is deleted once measured)")
     p.add_argument("--analyze-only", action="store_true", help="only rerun the analysis")
     a = p.parse_args()
     if a.analyze_only:
         OUT.mkdir(parents=True, exist_ok=True)
         analyze()
     else:
-        main(parse_sessions(a.sessions), a.limit, a.device, a.redo, a.shard, a.whisper_model)
+        main(parse_sessions(a.sessions), a.limit, a.device, a.redo, a.shard, a.whisper_model,
+             a.keep_audio)
