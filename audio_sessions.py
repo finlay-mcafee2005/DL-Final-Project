@@ -63,6 +63,15 @@ BASE = "https://s3.amazonaws.com/downloads.unmultimedia.org/radio/library/ltd/mp
 SESSIONS = range(70, 81)
 SR = at.SR
 
+# Sessions 68-69 (2013-2014): no floor track, only one channel per UN language. The
+# channel in the language the speaker used carries the speaker's own voice, so those
+# speeches are usable when the language is known (see plan_old_sessions).
+OLD_SESSIONS = (68, 69)
+WSS = "https://s3.amazonaws.com/downloads.unmultimedia.org/wss"
+STATEMENTS = "https://gadebate.un.org/sites/default/files/gastatements"
+UN_LANGS_NOT_EN = ["fr", "es", "ar", "ru", "zh"]
+OLD_PLAN = OUT / "old_sessions_plan.csv"
+
 TRIM_START, TRIM_END = 30.0, 20.0     # seconds: President's introduction / thanks
 VOICE_WINDOWS, VOICE_SECONDS = 24, 10.0
 RATE_CLIPS, RATE_SECONDS = 6, 30.0
@@ -92,6 +101,79 @@ def audio_url(session, year, code):
     return f"{BASE}/{year}/{session}_{code}_FL.mp3"
 
 
+def url_exists(url):
+    """True if a GET for the first byte succeeds (the statements server refuses HEAD)."""
+    req = urllib.request.Request(url, headers={"Range": "bytes=0-0", "User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return resp.status in (200, 206)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ConnectionError):
+        return False
+
+
+def statement_language(session, code):
+    """Language of the official statement PDF: a statement in a UN language other than
+    English means the speech was given in it; "en" if only English is found; else None."""
+    c = code.lower()
+    def found(lang):
+        return any(url_exists(f"{STATEMENTS}/{session}/{name}") for name in
+                   (f"{c}_{lang}_25.pdf", f"{session}_{c}_{lang}_25.pdf",
+                    f"{c}_{lang}_24.pdf", f"{session}_{c}_{lang}_24.pdf"))
+    for lang in UN_LANGS_NOT_EN:
+        if found(lang):
+            return lang
+    return "en" if found("en") else None
+
+
+def neighbour_languages():
+    """Most common detected language per country in sessions 70-72 (from cached results)."""
+    rows = [json.loads(p.read_text()) for p in (OUT / "speeches").glob("*.json")]
+    t = pd.DataFrame([r for r in rows if r.get("session") in (70, 71, 72) and r.get("language")])
+    if t.empty:
+        return {}
+    return t.groupby("iso3")["language"].agg(lambda x: x.mode().iat[0]).to_dict()
+
+
+def plan_old_sessions(log=print):
+    """Decide which channel carries the speaker's voice for each 2013-2014 speech.
+
+    statement PDF in fr/es/ar/ru/zh -> that channel (source "statement")
+    otherwise, the country spoke a UN language in 2015-2017 -> that channel
+        (source "neighbour_years"; an assumption: the leader could have changed)
+    otherwise (a language without a UN channel, such as Portuguese) -> skipped
+    """
+    speeches = load_processed()[0]
+    s = speeches[speeches["session"].isin(OLD_SESSIONS) & (speeches["n_votes"] > 0)].copy()
+    s["code"] = s["iso3"].map(iso2)
+    s = s.dropna(subset=["code"])
+    neighbours = neighbour_languages()
+    rows = []
+    for i, r in enumerate(s.itertuples(), 1):
+        stmt = statement_language(r.session, r.code)
+        if stmt in UN_LANGS_NOT_EN:
+            lang, source = stmt, "statement"
+        elif neighbours.get(r.iso3) in UN_LANGS_NOT_EN + ["en"]:
+            lang, source = neighbours[r.iso3], "neighbour_years"
+        else:
+            lang, source = None, f"skipped: statement {stmt}, 2015-17 language {neighbours.get(r.iso3)}"
+        rows.append({"speech_id": r.speech_id, "iso3": r.iso3, "session": int(r.session),
+                     "statement_language": stmt, "neighbour_language": neighbours.get(r.iso3),
+                     "channel_language": lang, "language_source": source,
+                     "url": f"{WSS}/ga{r.session}/{lang}/{r.session}_{r.code}_{lang}.mp3" if lang else None})
+        if i % 25 == 0:
+            log(f"  planned {i}/{len(s)}")
+    plan = pd.DataFrame(rows)
+    OUT.mkdir(parents=True, exist_ok=True)
+    plan.to_csv(OLD_PLAN, index=False)
+    use = plan.dropna(subset=["channel_language"])
+    log(f"\n{len(use)} of {len(plan)} speeches from 2013-2014 usable")
+    log("channel languages: " + ", ".join(f"{k} {v}" for k, v in use["channel_language"].value_counts().items()))
+    log("decided by: " + ", ".join(f"{k} {v}" for k, v in use["language_source"].value_counts().items()))
+    log(f"skipped: {len(plan) - len(use)} (no UN-language channel with the speaker's voice)")
+    log(f"plan written to {OLD_PLAN}")
+    return plan
+
+
 def load_corpus(sessions=SESSIONS):
     """Speeches in `sessions` with their official text, floor-audio URL and votes."""
     speeches = load_processed()[0]
@@ -99,6 +181,19 @@ def load_corpus(sessions=SESSIONS):
     s["code"] = s["iso3"].map(iso2)
     s = s.dropna(subset=["code"])
     s["url"] = [audio_url(r.session, r.year, r.code) for r in s.itertuples()]
+    old = s["session"].isin(OLD_SESSIONS)
+    if old.any():
+        if not OLD_PLAN.exists():
+            raise SystemExit("run `audio_sessions.py --plan-old` first for sessions 68-69")
+        plan = pd.read_csv(OLD_PLAN).dropna(subset=["channel_language"])
+        plan = plan.set_index("speech_id")[["url", "channel_language", "language_source"]]
+        keep = ~old | s["speech_id"].isin(plan.index)
+        s = s[keep].copy()
+        o = s["session"].isin(OLD_SESSIONS)
+        for col in ["url", "channel_language", "language_source"]:
+            if col not in s:
+                s[col] = None
+            s.loc[o, col] = s.loc[o, "speech_id"].map(plan[col])
     return s.sort_values(["session", "iso3"]).reset_index(drop=True)
 
 
@@ -155,14 +250,16 @@ def text_chunks(text, max_words=60):
     return [c for c in chunks if c.strip()]
 
 
-def measure_speech(signal, text, voice, sentiment, whisper):
-    """All speech-level measures for one speech (signal already decoded at 16 kHz)."""
+def measure_speech(signal, text, voice, sentiment, whisper, lang=None):
+    """All speech-level measures for one speech (signal already decoded at 16 kHz).
+    `lang`, if given, is the known language of the recording (2013-2014 channels)."""
     body = trim(signal)
     windows = spaced_clips(body, VOICE_WINDOWS, VOICE_SECONDS)
     v = pd.DataFrame([voice(w) for w in windows]).mean().to_dict()
     d = at.delivery(body, n_words=0)
     d.pop("speech_rate", None)
-    lang, share = whisper.language(body)
+    detected, share = whisper.language(body)
+    lang = lang or detected
     words, seconds = 0, 0.0
     for clip in spaced_clips(body, RATE_CLIPS, RATE_SECONDS):
         segs, _ = whisper.model.transcribe(clip, language=lang, vad_filter=False)
@@ -171,6 +268,7 @@ def measure_speech(signal, text, voice, sentiment, whisper):
     chunks = text_chunks(text)
     tv = float(np.mean(sentiment(chunks))) if chunks else np.nan
     return {**v, **d, "text_valence": tv, "language": lang, "language_share": share,
+            "detected_language": detected,
             "speech_rate": words / seconds if seconds else np.nan,
             "minutes": len(signal) / SR / 60}
 
@@ -193,12 +291,17 @@ def process(corpus, voice, sentiment, whisper, redo=False, log=print, keep_audio
                 futures[i + 2] = pool.submit(download, todo[i + 2].url)
             row = {"speech_id": r.speech_id, "iso3": r.iso3, "country": r.country,
                    "session": int(r.session), "year": int(r.year), "url": r.url}
+            channel = getattr(r, "channel_language", None)
+            if isinstance(channel, str):
+                row["channel_language"] = channel
+                row["language_source"] = r.language_source
             if path is None:
                 row["missing"] = True
                 log(f"  [{i + 1}/{len(todo)}] {r.speech_id} {r.country}: no floor audio")
             else:
                 try:
-                    row.update(measure_speech(at.load_audio(path), r.text, voice, sentiment, whisper))
+                    row.update(measure_speech(at.load_audio(path), r.text, voice, sentiment, whisper,
+                                              lang=row.get("channel_language")))
                 except Exception as err:  # a broken file should not stop an overnight run
                     log(f"  [{i + 1}/{len(todo)}] {r.speech_id}: failed ({err}); will retry next run")
                     continue
@@ -457,6 +560,9 @@ if __name__ == "__main__":
     p.add_argument("--keep-audio", action="store_true",
                    help="keep the downloaded mp3s (by default each is deleted once measured)")
     p.add_argument("--analyze-only", action="store_true", help="only rerun the analysis")
+    p.add_argument("--plan-old", action="store_true",
+                   help="work out which channel carries each 2013-2014 speaker's voice"
+                        " (writes results/audio_sessions/old_sessions_plan.csv)")
     p.add_argument("--fix-languages", action="store_true",
                    help="re-detect implausible languages (see country_languages.json), re-measure"
                         " their speaking rate, then rerun the analysis")
@@ -464,6 +570,8 @@ if __name__ == "__main__":
     if a.analyze_only:
         OUT.mkdir(parents=True, exist_ok=True)
         analyze()
+    elif a.plan_old:
+        plan_old_sessions()
     elif a.fix_languages:
         print("loading Whisper")
         fix_languages(at.Whisper(a.whisper_model, a.device), keep_audio=a.keep_audio)
