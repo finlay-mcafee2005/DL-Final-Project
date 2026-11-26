@@ -68,6 +68,8 @@ VOICE_WINDOWS, VOICE_SECONDS = 24, 10.0
 RATE_CLIPS, RATE_SECONDS = 6, 30.0
 WHISPER_MODEL = "large-v3-turbo"
 
+NO_SPACE_LANGS = {"th", "lo", "km", "my"}   # Thai, Lao, Khmer, Burmese
+MIN_SPEECH_RATE = 0.5                         # words/s; below this the transcription failed
 VOICE_COLS = ["arousal", "dominance", "valence"]
 DELIVERY_COLS = ["pitch_mean", "pitch_sd", "loudness_db", "pause_share"]
 MEASURES = ["text_valence"] + VOICE_COLS + DELIVERY_COLS + ["speech_rate", "speech_rate_in_lang"]
@@ -207,6 +209,70 @@ def process(corpus, voice, sentiment, whisper, redo=False, log=print, keep_audio
             (cache / f"{r.speech_id}.json").write_text(json.dumps(row))
 
 
+# ---------------------------------------------------------------- language fix
+
+# Languages a speech could plausibly be given in, per country: the six UN languages plus
+# any language spoken by 25%+ of the country, or official and spoken by 15%+ (from the
+# CLDR territory data via Babel; built once, see country_languages.json).
+COUNTRY_LANGUAGES = ROOT / "country_languages.json"
+
+
+def implausible(rows, allowed):
+    """Speeches whose detected language is not plausible for the country."""
+    return [r for r in rows if not r.get("missing") and "language" in r
+            and r["language"] not in allowed.get(r["iso3"], [r["language"]])]
+
+
+def redetect(whisper, body, allowed, n_clips=5):
+    """Most likely allowed language, summing the full Whisper model's probabilities
+    over evenly spaced clips (the main model, much better than the small detector)."""
+    supported = set(getattr(whisper.model, "supported_languages", []) or allowed)
+    probs = {}
+    for clip in spaced_clips(body, n_clips, RATE_SECONDS):
+        _, _, all_probs = whisper.model.detect_language(audio=clip)
+        for lang, prob in all_probs:
+            probs[lang] = probs.get(lang, 0.0) + prob
+    candidates = [l for l in allowed if l in supported and l in probs]
+    return max(candidates, key=probs.get) if candidates else "en"
+
+
+def speech_rate_in(whisper, body, lang):
+    words, seconds = 0, 0.0
+    for clip in spaced_clips(body, RATE_CLIPS, RATE_SECONDS):
+        segs, _ = whisper.model.transcribe(clip, language=lang, vad_filter=False)
+        words += sum(at.count_units(x.text, lang) for x in segs)
+        seconds += len(clip) / SR
+    return words / seconds if seconds else float("nan")
+
+
+def fix_languages(whisper, log=print, keep_audio=False):
+    """Re-detect the language of implausible speeches and re-measure their speaking rate.
+    Other measures do not depend on the language and are kept."""
+    allowed = json.loads(COUNTRY_LANGUAGES.read_text())
+    paths = sorted((OUT / "speeches").glob("*.json"))
+    rows = {p: json.loads(p.read_text()) for p in paths}
+    todo = [(p, r) for p, r in rows.items() if r in implausible([r], allowed)]
+    log(f"{len(todo)} speeches with an implausible language to re-check")
+    for i, (path_json, r) in enumerate(todo, 1):
+        t0 = time.time()
+        audio = download(r["url"])
+        if audio is None:
+            log(f"  [{i}/{len(todo)}] {r['speech_id']}: audio no longer available, skipped")
+            continue
+        body = trim(at.load_audio(audio))
+        old = r["language"]
+        new = redetect(whisper, body, allowed[r["iso3"]])
+        r["language_first_detected"] = old
+        r["language"] = new
+        r["language_fixed"] = True
+        r["speech_rate"] = speech_rate_in(whisper, body, new)
+        path_json.write_text(json.dumps(r))
+        if not keep_audio:
+            audio.unlink(missing_ok=True)
+        log(f"  [{i}/{len(todo)}] {r['speech_id']} {r['country']}: {old} -> {new},"
+            f" {r['speech_rate']:.2f} words/s, {time.time() - t0:.0f}s")
+
+
 # ---------------------------------------------------------------- analysis
 
 def dissent_by_speech():
@@ -223,6 +289,13 @@ def load_tone():
     if "missing" in t:
         t = t[t["missing"].isna() | (t["missing"] == False)].drop(columns="missing")  # noqa: E712
     t = t.dropna(subset=["arousal"]).reset_index(drop=True)
+    # Speaking rate is unusable for languages written without spaces between words (word
+    # counts from splitting on spaces are meaningless; Chinese and Japanese are counted by
+    # character instead) and below 0.5 words/s, which no real speech reaches: Whisper
+    # transcribed the clips in the wrong language. Other measures of those speeches are kept.
+    bad_rate = t["language"].isin(NO_SPACE_LANGS) | (t["speech_rate"] < MIN_SPEECH_RATE)
+    t["speech_rate_excluded"] = bad_rate
+    t.loc[bad_rate, "speech_rate"] = np.nan
     # speaking rate is only comparable within a language (languages with 5+ speeches)
     g = t.groupby("language")["speech_rate"]
     t["speech_rate_in_lang"] = ((t["speech_rate"] - g.transform("mean"))
@@ -332,6 +405,10 @@ def _analyze(log=print):
     for name, df in outputs.items():
         df.to_csv(OUT / f"{name}.csv", index=False)
     plot_by_session(outputs["by_session"], OUT / "by_session.png")
+    log(f"\nspeaking rate excluded for {int(t['speech_rate_excluded'].sum())} speeches"
+        f" (languages without word spaces, or under {MIN_SPEECH_RATE} words/s)")
+    if "language_fixed" in t:
+        log(f"\nlanguage re-detected for {int(t['language_fixed'].fillna(False).sum())} speeches")
     log(f"\n{len(t)} speeches from {t['iso3'].nunique()} countries, sessions"
         f" {t['session'].min()}-{t['session'].max()}"
         f" ({', '.join(f'{s}: {n}' for s, n in t.groupby('session').size().items())})")
@@ -380,9 +457,16 @@ if __name__ == "__main__":
     p.add_argument("--keep-audio", action="store_true",
                    help="keep the downloaded mp3s (by default each is deleted once measured)")
     p.add_argument("--analyze-only", action="store_true", help="only rerun the analysis")
+    p.add_argument("--fix-languages", action="store_true",
+                   help="re-detect implausible languages (see country_languages.json), re-measure"
+                        " their speaking rate, then rerun the analysis")
     a = p.parse_args()
     if a.analyze_only:
         OUT.mkdir(parents=True, exist_ok=True)
+        analyze()
+    elif a.fix_languages:
+        print("loading Whisper")
+        fix_languages(at.Whisper(a.whisper_model, a.device), keep_audio=a.keep_audio)
         analyze()
     else:
         main(parse_sessions(a.sessions), a.limit, a.device, a.redo, a.shard, a.whisper_model,

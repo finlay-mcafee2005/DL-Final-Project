@@ -1,0 +1,1718 @@
+{
+"AFG": [
+"ar",
+"en",
+"es",
+"fa",
+"fr",
+"ps",
+"ru",
+"zh"
+],
+"AGO": [
+"ar",
+"en",
+"es",
+"fr",
+"kmb",
+"pt",
+"ru",
+"umb",
+"zh"
+],
+"ALB": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"sq",
+"zh"
+],
+"AND": [
+"ar",
+"ca",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"ARE": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"ARG": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"ARM": [
+"ar",
+"en",
+"es",
+"fr",
+"hy",
+"ru",
+"zh"
+],
+"ATG": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"AUS": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"AUT": [
+"ar",
+"bar",
+"de",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"AZE": [
+"ar",
+"az",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"BDI": [
+"ar",
+"en",
+"es",
+"fr",
+"rn",
+"ru",
+"zh"
+],
+"BEL": [
+"ar",
+"de",
+"en",
+"es",
+"fr",
+"nl",
+"ru",
+"zh"
+],
+"BEN": [
+"ar",
+"en",
+"es",
+"fon",
+"fr",
+"ru",
+"zh"
+],
+"BFA": [
+"ar",
+"dyu",
+"en",
+"es",
+"fr",
+"mos",
+"ru",
+"zh"
+],
+"BGD": [
+"ar",
+"bn",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"BGR": [
+"ar",
+"bg",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"BHR": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"BHS": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"BIH": [
+"ar",
+"bs",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"BLR": [
+"ar",
+"be",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"BLZ": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"BOL": [
+"ar",
+"ay",
+"en",
+"es",
+"fr",
+"qu",
+"ru",
+"zh"
+],
+"BRA": [
+"ar",
+"en",
+"es",
+"fr",
+"pt",
+"ru",
+"zh"
+],
+"BRB": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"BRN": [
+"ar",
+"en",
+"es",
+"fr",
+"ms",
+"ru",
+"zh"
+],
+"BTN": [
+"ar",
+"dz",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"BWA": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"tn",
+"zh"
+],
+"CAF": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"sg",
+"zh"
+],
+"CAN": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"CHE": [
+"ar",
+"de",
+"en",
+"es",
+"fr",
+"gsw",
+"it",
+"ru",
+"zh"
+],
+"CHL": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"CHN": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"CIV": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"CMR": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"COD": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"sw",
+"zh"
+],
+"COG": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"COL": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"COM": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"wni",
+"zdj",
+"zh"
+],
+"CPV": [
+"ar",
+"en",
+"es",
+"fr",
+"kea",
+"pt",
+"ru",
+"zh"
+],
+"CRI": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"CUB": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"CYP": [
+"ar",
+"el",
+"en",
+"es",
+"fr",
+"ru",
+"tr",
+"zh"
+],
+"CZE": [
+"ar",
+"cs",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"DEU": [
+"ar",
+"de",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"DJI": [
+"aa",
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"so",
+"zh"
+],
+"DMA": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"DNK": [
+"ar",
+"da",
+"de",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"DOM": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"DZA": [
+"ar",
+"arq",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"ECU": [
+"ar",
+"en",
+"es",
+"fr",
+"qu",
+"ru",
+"zh"
+],
+"EGY": [
+"ar",
+"arz",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"ERI": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"ti",
+"zh"
+],
+"ESP": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"EST": [
+"ar",
+"en",
+"es",
+"et",
+"fr",
+"ru",
+"zh"
+],
+"ETH": [
+"am",
+"ar",
+"en",
+"es",
+"fr",
+"om",
+"ru",
+"zh"
+],
+"FIN": [
+"ar",
+"en",
+"es",
+"fi",
+"fr",
+"ru",
+"sv",
+"zh"
+],
+"FJI": [
+"ar",
+"en",
+"es",
+"fj",
+"fr",
+"hi",
+"hif",
+"ru",
+"zh"
+],
+"FRA": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"FSM": [
+"ar",
+"chk",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"GAB": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"GBR": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"GEO": [
+"ar",
+"en",
+"es",
+"fr",
+"ka",
+"ru",
+"zh"
+],
+"GHA": [
+"ak",
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"GIN": [
+"ar",
+"en",
+"es",
+"ff",
+"fr",
+"ru",
+"zh"
+],
+"GMB": [
+"ar",
+"en",
+"es",
+"fr",
+"man",
+"ru",
+"zh"
+],
+"GNB": [
+"ar",
+"en",
+"es",
+"fr",
+"pt",
+"ru",
+"zh"
+],
+"GNQ": [
+"ar",
+"en",
+"es",
+"fan",
+"fr",
+"ru",
+"zh"
+],
+"GRC": [
+"ar",
+"el",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"GRD": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"GTM": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"GUY": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"HND": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"HRV": [
+"ar",
+"en",
+"es",
+"fr",
+"hr",
+"ru",
+"zh"
+],
+"HTI": [
+"ar",
+"en",
+"es",
+"fr",
+"ht",
+"ru",
+"zh"
+],
+"HUN": [
+"ar",
+"en",
+"es",
+"fr",
+"hu",
+"ru",
+"zh"
+],
+"IDN": [
+"ar",
+"en",
+"es",
+"fr",
+"id",
+"jw",
+"ru",
+"zh"
+],
+"IND": [
+"ar",
+"en",
+"es",
+"fr",
+"hi",
+"ru",
+"zh"
+],
+"IRL": [
+"ar",
+"en",
+"es",
+"fr",
+"ga",
+"ru",
+"zh"
+],
+"IRN": [
+"ar",
+"en",
+"es",
+"fa",
+"fr",
+"ru",
+"zh"
+],
+"IRQ": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"ISL": [
+"ar",
+"en",
+"es",
+"fr",
+"is",
+"ru",
+"zh"
+],
+"ISR": [
+"ar",
+"en",
+"es",
+"fr",
+"he",
+"ru",
+"zh"
+],
+"ITA": [
+"ar",
+"en",
+"es",
+"fr",
+"it",
+"ru",
+"zh"
+],
+"JAM": [
+"ar",
+"en",
+"es",
+"fr",
+"jam",
+"ru",
+"zh"
+],
+"JOR": [
+"apc",
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"JPN": [
+"ar",
+"en",
+"es",
+"fr",
+"ja",
+"ru",
+"zh"
+],
+"KAZ": [
+"ar",
+"en",
+"es",
+"fr",
+"kk",
+"ru",
+"zh"
+],
+"KEN": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"sw",
+"zh"
+],
+"KGZ": [
+"ar",
+"en",
+"es",
+"fr",
+"ky",
+"ru",
+"zh"
+],
+"KHM": [
+"ar",
+"en",
+"es",
+"fr",
+"km",
+"ru",
+"zh"
+],
+"KIR": [
+"ar",
+"en",
+"es",
+"fr",
+"gil",
+"ru",
+"zh"
+],
+"KNA": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"KOR": [
+"ar",
+"en",
+"es",
+"fr",
+"ko",
+"ru",
+"zh"
+],
+"KWT": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"LAO": [
+"ar",
+"en",
+"es",
+"fr",
+"lo",
+"ru",
+"zh"
+],
+"LBN": [
+"apc",
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"LBR": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"LBY": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"LCA": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"LIE": [
+"ar",
+"de",
+"en",
+"es",
+"fr",
+"gsw",
+"ru",
+"zh"
+],
+"LKA": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"si",
+"ta",
+"zh"
+],
+"LSO": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"st",
+"zh"
+],
+"LTU": [
+"ar",
+"en",
+"es",
+"fr",
+"lt",
+"ru",
+"zh"
+],
+"LUX": [
+"ar",
+"de",
+"en",
+"es",
+"fr",
+"lb",
+"ru",
+"zh"
+],
+"LVA": [
+"ar",
+"en",
+"es",
+"fr",
+"lv",
+"ru",
+"zh"
+],
+"MAR": [
+"ar",
+"ary",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"MCO": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"MDA": [
+"ar",
+"en",
+"es",
+"fr",
+"ro",
+"ru",
+"zh"
+],
+"MDG": [
+"ar",
+"en",
+"es",
+"fr",
+"mg",
+"ru",
+"zh"
+],
+"MDV": [
+"ar",
+"dv",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"MEX": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"MHL": [
+"ar",
+"en",
+"es",
+"fr",
+"mh",
+"ru",
+"zh"
+],
+"MKD": [
+"ar",
+"en",
+"es",
+"fr",
+"mk",
+"ru",
+"sq",
+"zh"
+],
+"MLI": [
+"ar",
+"bm",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"MLT": [
+"ar",
+"en",
+"es",
+"fr",
+"it",
+"mt",
+"ru",
+"zh"
+],
+"MMR": [
+"ar",
+"en",
+"es",
+"fr",
+"my",
+"ru",
+"zh"
+],
+"MNE": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"sr",
+"zh"
+],
+"MNG": [
+"ar",
+"en",
+"es",
+"fr",
+"mn",
+"ru",
+"zh"
+],
+"MOZ": [
+"ar",
+"en",
+"es",
+"fr",
+"pt",
+"ru",
+"zh"
+],
+"MRT": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"MUS": [
+"ar",
+"en",
+"es",
+"fr",
+"mfe",
+"ru",
+"zh"
+],
+"MWI": [
+"ar",
+"en",
+"es",
+"fr",
+"ny",
+"ru",
+"zh"
+],
+"MYS": [
+"ar",
+"en",
+"es",
+"fr",
+"ms",
+"ru",
+"zh"
+],
+"NAM": [
+"af",
+"ar",
+"en",
+"es",
+"fr",
+"kj",
+"ru",
+"zh"
+],
+"NER": [
+"ar",
+"en",
+"es",
+"fr",
+"ha",
+"ru",
+"zh"
+],
+"NGA": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"NIC": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"NLD": [
+"ar",
+"de",
+"en",
+"es",
+"fr",
+"nl",
+"ru",
+"zh"
+],
+"NOR": [
+"ar",
+"en",
+"es",
+"fr",
+"no",
+"ru",
+"zh"
+],
+"NPL": [
+"ar",
+"en",
+"es",
+"fr",
+"ne",
+"ru",
+"zh"
+],
+"NRU": [
+"ar",
+"en",
+"es",
+"fr",
+"na",
+"ru",
+"zh"
+],
+"NZL": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"OMN": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"PAK": [
+"ar",
+"en",
+"es",
+"fr",
+"lah",
+"pa",
+"ru",
+"ur",
+"zh"
+],
+"PAN": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"PER": [
+"ar",
+"en",
+"es",
+"fr",
+"qu",
+"ru",
+"zh"
+],
+"PHL": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"tl",
+"zh"
+],
+"PLW": [
+"ar",
+"en",
+"es",
+"fr",
+"pau",
+"ru",
+"zh"
+],
+"PNG": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"tpi",
+"zh"
+],
+"POL": [
+"ar",
+"en",
+"es",
+"fr",
+"pl",
+"ru",
+"zh"
+],
+"PRK": [
+"ar",
+"en",
+"es",
+"fr",
+"ko",
+"ru",
+"zh"
+],
+"PRT": [
+"ar",
+"en",
+"es",
+"fr",
+"pt",
+"ru",
+"zh"
+],
+"PRY": [
+"ar",
+"en",
+"es",
+"fr",
+"gn",
+"ru",
+"zh"
+],
+"QAT": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"ROU": [
+"ar",
+"en",
+"es",
+"fr",
+"ro",
+"ru",
+"zh"
+],
+"RUS": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"RWA": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"rw",
+"zh"
+],
+"SAU": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"SDN": [
+"apd",
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"SEN": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"wo",
+"zh"
+],
+"SGP": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"SLB": [
+"ar",
+"en",
+"es",
+"fr",
+"pis",
+"ru",
+"zh"
+],
+"SLE": [
+"ar",
+"en",
+"es",
+"fr",
+"kri",
+"men",
+"ru",
+"tem",
+"zh"
+],
+"SLV": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"SMR": [
+"ar",
+"en",
+"es",
+"fr",
+"it",
+"ru",
+"zh"
+],
+"SOM": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"so",
+"zh"
+],
+"SRB": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"sr",
+"zh"
+],
+"SSD": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"STP": [
+"ar",
+"en",
+"es",
+"fr",
+"pt",
+"ru",
+"zh"
+],
+"SUR": [
+"ar",
+"en",
+"es",
+"fr",
+"nl",
+"ru",
+"srn",
+"zh"
+],
+"SVK": [
+"ar",
+"cs",
+"en",
+"es",
+"fr",
+"ru",
+"sk",
+"zh"
+],
+"SVN": [
+"ar",
+"de",
+"en",
+"es",
+"fr",
+"hr",
+"ru",
+"sl",
+"zh"
+],
+"SWE": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"sv",
+"zh"
+],
+"SWZ": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"ss",
+"zh"
+],
+"SYC": [
+"ar",
+"crs",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"SYR": [
+"apc",
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"TCD": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"TGO": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"THA": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"th",
+"zh"
+],
+"TJK": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"tg",
+"zh"
+],
+"TKM": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"tk",
+"zh"
+],
+"TLS": [
+"ar",
+"en",
+"es",
+"fr",
+"pt",
+"ru",
+"tet",
+"zh"
+],
+"TON": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"to",
+"zh"
+],
+"TTO": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"TUN": [
+"aeb",
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"TUR": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"tr",
+"zh"
+],
+"TUV": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"tvl",
+"zh"
+],
+"TZA": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"sw",
+"zh"
+],
+"UGA": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"sw",
+"zh"
+],
+"UKR": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"uk",
+"zh"
+],
+"URY": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"USA": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"UZB": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"uz",
+"zh"
+],
+"VCT": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"VEN": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"VNM": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"vi",
+"zh"
+],
+"VUT": [
+"ar",
+"bi",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"WSM": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"sm",
+"zh"
+],
+"YEM": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"ZAF": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"ZMB": [
+"ar",
+"bem",
+"en",
+"es",
+"fr",
+"ru",
+"zh"
+],
+"ZWE": [
+"ar",
+"en",
+"es",
+"fr",
+"ru",
+"sn",
+"zh"
+]
+}
