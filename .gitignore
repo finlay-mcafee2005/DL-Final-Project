@@ -21,3 +21,4 @@ data/*.code-workspace
 # Audio case study: downloaded speech audio (large; re-fetched by audio_tone.py)
 data/audio/
 data/hf/
+data/audio_sessions/

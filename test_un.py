@@ -373,3 +373,66 @@ def test_figures_are_drawn_from_minimal_results(tmp_path, monkeypatch):
         make()
     assert {f.name for f in figures.glob("*.png")} == {
         "loss_curves.png", "retrieval.png", "results.png", "by_issue.png"}
+
+
+# ---------------------------------------------------------------- balanced audio sample
+
+def test_waterfill_splits_equally_without_exceeding_what_is_available():
+    import balance_passages as bp
+    assert bp.waterfill({"a": 100, "b": 100, "c": 10}, 150) == {"a": 70, "b": 70, "c": 10}
+    assert sum(bp.waterfill({"a": 3, "b": 5}, 100).values()) == 8
+    assert sorted(bp.waterfill({"a": 50, "b": 50, "c": 50}, 100).values()) == [33, 33, 34]
+
+
+def test_multi_issue_passages_go_to_the_rarest_issue():
+    import balance_passages as bp
+    df = pd.DataFrame({f"issue_{k}": [False] * 4 for k in ISSUES})
+    df.loc[[0, 1, 2], "issue_human_rights"] = True
+    df.loc[2, "issue_colonialism"] = True          # colonialism is rarer than human rights
+    s = bp.assign_strata(df)
+    assert s.tolist() == ["human_rights", "human_rights", "colonialism", "other"]
+    assert bp.assign_strata(df, include_other=False).isna().tolist() == [False, False, False, True]
+
+
+def test_balanced_sample_is_equal_across_strata_and_countries():
+    import balance_passages as bp
+    rng = np.random.default_rng(0)
+    n = 3000
+    df = pd.DataFrame({"speech_id": rng.choice([f"C{i}_80" for i in range(30)], n)})
+    for k in ISSUES:
+        df[f"issue_{k}"] = rng.random(n) < 0.15
+    s = bp.balanced_sample(df, n=700, seed=0)
+    assert len(s) == 700 and s.index.is_unique
+    per = s["stratum"].value_counts()
+    assert per.max() - per.min() <= 1
+    strata = df.assign(stratum=bp.assign_strata(df))
+    for stratum, g in s.groupby("stratum"):
+        c = g["speech_id"].value_counts()
+        avail = strata.loc[strata["stratum"] == stratum, "speech_id"].value_counts()
+        not_exhausted = c[c < avail.reindex(c.index)]  # countries that could have given more
+        assert not_exhausted.empty or not_exhausted.max() - not_exhausted.min() <= 1
+        assert c.max() <= not_exhausted.max() if len(not_exhausted) else True
+    assert s.equals(bp.balanced_sample(df, n=700, seed=0))
+
+
+def test_non_english_passages_are_tagged_from_their_translation():
+    df = pd.DataFrame({"speech_id": ["FRA_80", "FRA_80"], "text": ["la paix", "le désarmement"],
+                       "text_en": ["peace in the middle east", "nuclear disarmament"]})
+    for c in audio_tone.MEASURES:
+        df[c] = [0.0, 1.0]
+    out = audio_tone.add_z_and_issues(df)
+    assert out.loc[0, "issue_middle_east"] and out.loc[1, "issue_nuclear"]
+
+
+# ---------------------------------------------------------------- audio across sessions
+
+def test_floor_audio_urls_and_clip_helpers():
+    import audio_sessions as S
+    assert S.iso2("USA") == "US" and S.iso2("GBR") == "GB"
+    assert S.audio_url(70, 2015, "US").endswith("/mp3/ga/2015/70_US_FL.mp3")
+    clips = S.spaced_clips(np.zeros(S.SR * 100), 6, 30)
+    assert len(clips) == 3 and all(len(c) == 30 * S.SR for c in clips)
+    assert len(S.trim(np.zeros(S.SR * 200))) == 150 * S.SR      # intro and thanks dropped
+    assert len(S.trim(np.zeros(S.SR * 70))) == 70 * S.SR        # too short to trim
+    chunks = S.text_chunks("We support peace. " * 50, max_words=60)
+    assert len(chunks) > 1 and all(c.strip() for c in chunks)

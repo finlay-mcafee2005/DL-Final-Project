@@ -3,20 +3,36 @@
 Data: the UN transcription corpus on Hugging Face (united-nations/transcription-corpus,
 "gadebate" subset, CC BY 4.0): the General Debate of the 80th session (2025), one row
 per country, with the floor audio (the speaker's own voice) and each interpretation.
-Only speeches delivered in English are used, so the voice is the leader's own (not an
-interpreter's) and the English-trained text and voice models apply.
+The floor audio is always used, so the voice is the leader's own, never an interpreter's.
+
+Two modes (--languages):
+  all  (default) every speech, in whatever language it was given (192 rows). Whisper
+       transcribes in the speaker's language and text sentiment uses a multilingual model.
+       Results go to results/audio_all/.
+  en   only speeches delivered in English, with English-only models: the original
+       74-speech study. Results go to results/audio/.
 
 For each speech:
   1. download the floor audio (cached in data/audio/)
-  2. transcribe with Whisper (faster-whisper), skipping any speech Whisper hears as
-     not English (the corpus language field is not always right), and merge its segments into passages of
-     5-20 seconds that end on a sentence boundary where possible
+  2. detect the speech's language with Whisper (the corpus language field is not always
+     right), transcribe it in that language (in "en" mode, speeches that are not English
+     are skipped), and merge its segments into passages of 5-20 seconds that end on a
+     sentence boundary where possible. Passages not in English are machine-translated
+     (opus-mt-mul-en) into text_en, used only to tag issues with the English keywords.
+     In a speech that is not in English, passages
+     Whisper hears as English are dropped: they are the Assembly President introducing or
+     thanking the speaker
   3. score each passage twice:
        text   sentiment of the words: P(positive) - P(negative), from -1 to 1
        voice  arousal, dominance and valence of the voice (audeering wav2vec2 model
               fine-tuned on MSP-Podcast; roughly 0 to 1)
      plus delivery features: pitch level and variation (semitones), loudness (dB),
-     share of pauses, speaking rate (words per second)
+     share of pauses, speaking rate (words per second; characters per second for
+     Chinese and Japanese, which are written without spaces)
+     Caveat: the voice model was trained on English speech (MSP-Podcast), so its scores
+     are less reliable for speeches in other languages. Speaking rate is not comparable
+     across languages, so the comparison with votes also uses speech_rate_in_lang, the
+     rate standardised among speeches in the same language.
      Caveat: the voice model's *valence* is known to draw partly on what is being said
      (its authors report it is sensitive to linguistic content), so a correlation
      between text sentiment and vocal valence overstates how much the voice alone
@@ -30,17 +46,22 @@ Then, across speeches:
   - mismatches: the passages where the words and the voice disagree most
   - tone by issue: passages tagged with the issue keywords from un_data.py
   - tone and votes: each country's average tone vs its share of No / Abstain votes on
-    contested resolutions that session (descriptive only: a few dozen countries)
+    contested resolutions that session (descriptive only), for all speeches and for the
+    English-delivered ones alone
 
-Outputs go to results/audio/: passages.csv, speeches.csv, mismatches.csv,
+Outputs go to results/audio_all/ (or results/audio/ with --languages en): passages.csv, speeches.csv, mismatches.csv,
 issues.csv, correlations.csv and three PNG figures.
 
 Usage (needs the audio extra: uv sync --extra audio):
-    uv run python audio_tone.py --limit 3            # quick check on 3 speeches
-    uv run python audio_tone.py                       # every English-delivered speech
-    uv run python audio_tone.py --whisper-model medium.en --device mps
-Per-speech results are cached in results/audio/passages/, so a stopped run resumes
+    uv run python audio_tone.py --limit 3             # quick check on 3 speeches
+    uv run python audio_tone.py --device mps           # all 192 speeches, every language
+    uv run python audio_tone.py --languages en         # the original English-only study
+    uv run python audio_tone.py --whisper-model medium --device mps
+Per-speech results are cached in <output folder>/passages/, so a stopped run resumes
 where it left off (--redo recomputes them; --analyze-only reruns just the analysis).
+In "all" mode, English speeches already processed by the English-only study are reused
+from results/audio/passages/ (their transcripts and voice scores are kept; only the text
+sentiment is rescored with the multilingual model), so they are not transcribed again.
 """
 
 import argparse
@@ -55,7 +76,9 @@ import pandas as pd
 from un_data import DATA, ISSUE_PATTERNS, ISSUES, load_split
 
 ROOT = Path(__file__).parent
-OUT = ROOT / "results" / "audio"
+OUT_EN = ROOT / "results" / "audio"
+OUT_ALL = ROOT / "results" / "audio_all"
+OUT = OUT_ALL  # set by main() / --languages
 AUDIO_DIR = DATA / "audio"
 
 REPO = "united-nations/transcription-corpus"
@@ -63,9 +86,19 @@ SUBSET = "gadebate"
 SESSION = 80
 SR = 16_000
 
-WHISPER_MODEL = "small.en"
+WHISPER_MODEL = "small"            # multilingual
+WHISPER_MODEL_EN = "small.en"      # English-only mode
 EMOTION_MODEL = "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim"
-TEXT_MODEL = "cardiffnlp/twitter-roberta-base-sentiment-latest"
+TEXT_MODEL = "cardiffnlp/twitter-xlm-roberta-base-sentiment"         # multilingual
+TEXT_MODEL_EN = "cardiffnlp/twitter-roberta-base-sentiment-latest"   # English-only mode
+# Issue tags use the English keyword patterns from un_data, so passages in other languages
+# are machine-translated to English (text_en) for tagging only; sentiment uses the original.
+TRANSLATE_MODEL = "Helsinki-NLP/opus-mt-mul-en"
+
+# Sentence-final punctuation, including Chinese/Japanese full-width marks and the Arabic
+# question mark, so passages can end on a sentence boundary in any language.
+SENTENCE_END = (".", "!", "?", "\u3002", "\uff01", "\uff1f", "\u061f")
+CHARACTER_LANGS = {"zh", "ja"}  # written without spaces: count characters, not words
 
 MIN_SECONDS, MAX_SECONDS = 5.0, 20.0
 TEXT_COLS = ["text_valence"]
@@ -104,6 +137,13 @@ def is_english(lang):
     return isinstance(lang, str) and lang.strip().lower() in {"en", "eng", "english"}
 
 
+def count_units(text, lang="en"):
+    """Words in `text`; for Chinese and Japanese, non-space characters (no spaces between words)."""
+    if lang in CHARACTER_LANGS:
+        return sum(1 for ch in text if not ch.isspace() and ch.isalnum())
+    return len(text.split())
+
+
 def fetch_audio(ref, folder=AUDIO_DIR):
     """Local path of an audio file given its URL or its path inside the dataset repo."""
     folder.mkdir(parents=True, exist_ok=True)
@@ -135,7 +175,7 @@ def merge_segments(segments, min_s=MIN_SECONDS, max_s=MAX_SECONDS):
             current["end"] = seg["end"]
             current["text"] = f"{current['text'].strip()} {seg['text'].strip()}"
         length = current["end"] - current["start"]
-        if (length >= min_s and current["text"].rstrip().endswith((".", "!", "?"))) or length >= max_s:
+        if (length >= min_s and current["text"].rstrip().endswith(SENTENCE_END)) or length >= max_s:
             passages.append(current)
             current = None
     if current is not None:
@@ -155,7 +195,11 @@ def merge_segments(segments, min_s=MIN_SECONDS, max_s=MAX_SECONDS):
 CHAIR_PATTERN = (r"give the floor|request protocol|escort (?:his|her) excellency"
                  r"|will hear an? (?:address|statement)|i would like to introduce"
                  r"|on behalf of the general assembly|from the rostrum"
-                 r"|for the statement (?:he|she) has just made|^\W*the floor\W*$")
+                 r"|for the statement (?:he|she) has just made|^\W*the floor\W*$"
+                 # also as they come out of transcription in another language + translation
+                 r"|will now hear|\bthe assembly will (?:now )?(?:hear|heed|be)\b"
+                 r"|hear (?:the|an|and) (?:address|statement) by"
+                 r"|address by (?:his|her|your) excellen")
 
 
 def is_chair(texts):
@@ -164,7 +208,9 @@ def is_chair(texts):
 
 
 def issue_tags(texts):
-    """Boolean issue_<area> columns for each passage (same keywords as un_data)."""
+    """Boolean issue_<area> columns for each passage (same keywords as un_data).
+
+    Pass English text: for passages in other languages, use the text_en column."""
     lower = pd.Series(list(texts)).str.lower()
     return pd.DataFrame({f"issue_{k}": lower.str.contains(p, regex=True)
                          for k, p in ISSUE_PATTERNS.items()})
@@ -187,8 +233,12 @@ class Whisper:
     DETECT_MODEL = "base"
     CLIPS_AT = (0.25, 0.5, 0.75)
 
-    def __init__(self, name=WHISPER_MODEL, device="cpu"):
+    def __init__(self, name=WHISPER_MODEL, device="cpu", english_only=False):
         from faster_whisper import WhisperModel
+        if name.endswith(".en") and not english_only:
+            raise ValueError(f"{name} only transcribes English; use a multilingual model"
+                             " (e.g. small) or --languages en")
+        self.english_only = english_only
         try:  # Apple-silicon (MPS) backend is experimental in CTranslate2; fall back to CPU
             self.model = WhisperModel(name, device=device,
                                       compute_type="float16" if device == "mps" else "int8")
@@ -208,12 +258,17 @@ class Whisper:
         top = max(set(votes), key=votes.count)
         return top, votes.count(top) / len(votes)
 
+    def language_of(self, clip):
+        """Language Whisper hears in one short clip (used to drop off-language passages)."""
+        lang, _, _ = self.detector.detect_language(audio=clip)
+        return lang
+
     def __call__(self, path, signal=None):
         signal = load_audio(path) if signal is None else signal
         lang, share = self.language(signal)
-        if lang != "en":
+        if lang != "en" and self.english_only:
             return [], lang, share
-        segments, _ = self.model.transcribe(signal, language="en", vad_filter=True)
+        segments, _ = self.model.transcribe(signal, language=lang, vad_filter=True)
         return [{"start": s.start, "end": s.end, "text": s.text} for s in segments], lang, share
 
 
@@ -304,10 +359,13 @@ class TextSentiment:
     def __init__(self, name=TEXT_MODEL, device="cpu"):
         import torch
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
+        self.name = name
         self.torch, self.device = torch, device
         self.tokenizer = AutoTokenizer.from_pretrained(name)
         self.model = AutoModelForSequenceClassification.from_pretrained(name).to(device).eval()
         labels = {v.lower(): k for k, v in self.model.config.id2label.items()}
+        if "positive" not in labels:  # generic LABEL_0/1/2 names: cardiffnlp order is neg, neu, pos
+            labels = {"negative": 0, "positive": self.model.config.num_labels - 1}
         self.pos, self.neg = labels["positive"], labels["negative"]
 
     def __call__(self, texts, batch_size=32):
@@ -318,6 +376,27 @@ class TextSentiment:
             with self.torch.no_grad():
                 p = self.model(**batch).logits.softmax(-1).cpu().numpy()
             out += (p[:, self.pos] - p[:, self.neg]).tolist()
+        return out
+
+
+class Translator:
+    """Machine translation to English (Marian opus-mt-mul-en), used only for issue tags."""
+
+    def __init__(self, name=TRANSLATE_MODEL, device="cpu"):
+        import torch
+        from transformers import MarianMTModel, MarianTokenizer
+        self.torch, self.device = torch, device
+        self.tokenizer = MarianTokenizer.from_pretrained(name)
+        self.model = MarianMTModel.from_pretrained(name).to(device).eval()
+
+    def __call__(self, texts, batch_size=16):
+        out = []
+        for i in range(0, len(texts), batch_size):
+            batch = self.tokenizer(texts[i:i + batch_size], padding=True, truncation=True,
+                                   max_length=256, return_tensors="pt").to(self.device)
+            with self.torch.no_grad():
+                ids = self.model.generate(**batch, max_new_tokens=256)
+            out += self.tokenizer.batch_decode(ids, skip_special_tokens=True)
         return out
 
 
@@ -346,15 +425,21 @@ def delivery(signal, n_words):
 
 # ---------------------------------------------------------------- per speech
 
-def score_speech(signal, segments, voice, text):
-    """One row per passage: timing, text, text sentiment, voice and delivery measures."""
+def score_speech(signal, segments, voice, text, lang="en", keep=None):
+    """One row per passage: timing, text, text sentiment, voice and delivery measures.
+
+    `keep(clip)`, if given, decides whether a passage is scored (used to drop passages
+    in a different language from the speech, such as the President's introduction).
+    """
     passages = merge_segments(segments)
     rows = []
     for p in passages:
         clip = signal[int(p["start"] * SR):int(p["end"] * SR)]
         if len(clip) < SR:  # under a second of audio: nothing to measure
             continue
-        n_words = len(p["text"].split())
+        if keep is not None and not keep(clip):
+            continue
+        n_words = count_units(p["text"], lang)
         rows.append({"start": round(p["start"], 2), "end": round(p["end"], 2),
                      "text": p["text"], **voice(clip), **delivery(clip, n_words)})
     df = pd.DataFrame(rows)
@@ -368,52 +453,108 @@ def zscore_within(df, cols, by="speech_id"):
     return (df[cols] - g.transform("mean")) / g.transform("std").replace(0, np.nan)
 
 
-def process(corpus, transcribe, voice, text, redo=False, log=print):
+def _rescore_text(cached, text, text_name):
+    """Cached passages scored with another text model: rescore only the text sentiment."""
+    have = cached["text_model"].iloc[0] if "text_model" in cached else TEXT_MODEL_EN
+    if have != text_name:
+        cached["text_valence"] = text(cached["text"].fillna("").tolist())
+        cached["text_model"] = text_name
+    return cached
+
+
+def _add_text_en(df, translate, lang):
+    """text_en: the passage in English, for issue tagging (a copy of text if already English)."""
+    if "text_en" in df and df["text_en"].notna().all():
+        return df
+    texts = df["text"].fillna("").tolist()
+    df["text_en"] = texts if lang == "en" or translate is None else translate(texts)
+    return df
+
+
+def process(corpus, transcribe, voice, text, redo=False, log=print, english_only=False,
+            reuse=None, translate=None):
     """Score every speech in `corpus` (cached per speech). Returns all passages.
 
-    Speeches Whisper detects as not English are skipped and listed in skipped.csv.
+    english_only: speeches Whisper detects as not English are skipped and listed in
+    skipped.csv. Otherwise every speech is transcribed in its own language.
+    reuse: another passages folder to take already-processed speeches from (their text
+    sentiment is rescored if it came from a different text model).
+    translate: callable list[str] -> list[str] into English, for issue tags of passages in
+    other languages (stored as text_en). None keeps text_en = text.
     A cached file from before the language check was fixed is recomputed.
     """
     cache = OUT / "passages"
     cache.mkdir(parents=True, exist_ok=True)
+    text_name = getattr(text, "name", TEXT_MODEL_EN if english_only else TEXT_MODEL)
     frames, skipped = [], []
     for i, row in enumerate(corpus.itertuples(), 1):
         path = cache / f"{row.speech_id}.csv"
-        if path.exists() and not redo:
-            cached = pd.read_csv(path)
-            if "detected_language" in cached:
+        if not redo:
+            source = path if path.exists() else (
+                reuse / path.name if reuse is not None and (reuse / path.name).exists() else None)
+            cached = pd.read_csv(source) if source is not None else None
+            if cached is not None and "detected_language" in cached:
                 if len(cached):
+                    before = cached.get("text_model")
+                    had_en = "text_en" in cached
+                    cached = _rescore_text(cached, text, text_name)
+                    lang = str(cached["detected_language"].iloc[0])
+                    cached = _add_text_en(cached, translate, lang)
+                    if (source != path or before is None or not had_en
+                            or not cached["text_model"].equals(before)):
+                        cached.to_csv(path, index=False)
                     frames.append(cached)
-                else:
+                    continue
+                if english_only:
                     skipped.append({"speech_id": row.speech_id, "country": row.country_name,
                                     "detected_language": "not en (cached)"})
-                continue
+                    continue
+                # skipped by an English-only run: process it now, in its own language
         t0 = time.time()
         audio = fetch_audio(row.audio_floor)
         signal = load_audio(audio)
         t1 = time.time()
         segments, lang, share = transcribe(audio, signal)
         t2 = time.time()
-        if lang != "en":
+        if lang != "en" and english_only:
             log(f"  [{i}/{len(corpus)}] {row.speech_id} {row.country_name}: skipped, Whisper"
                 f" hears {lang!r} in {share:.0%} of checked clips, not English")
             pd.DataFrame(columns=["speech_id", "country", "detected_language"]).to_csv(path, index=False)
             skipped.append({"speech_id": row.speech_id, "country": row.country_name,
                             "detected_language": lang, "share_of_clips": share})
             continue
-        df = score_speech(signal, segments, voice, text)
+        dropped = [0]
+        keep = None
+        if lang != "en" and hasattr(transcribe, "language_of"):
+            def keep(clip):
+                # The Assembly President introduces and thanks speakers in English. Drop only
+                # passages heard as English: a short clip in the speaker's language is often
+                # misheard as a related one (Catalan as Spanish), so "!= lang" drops real speech.
+                ok = transcribe.language_of(clip) != "en"
+                dropped[0] += not ok
+                return ok
+        df = score_speech(signal, segments, voice, text, lang=lang, keep=keep)
+        if not len(df):
+            log(f"  [{i}/{len(corpus)}] {row.speech_id} {row.country_name}: no passages"
+                f" in {lang!r}; skipped")
+            skipped.append({"speech_id": row.speech_id, "country": row.country_name,
+                            "detected_language": lang, "share_of_clips": share})
+            continue
         df.insert(0, "speech_id", row.speech_id)
         df.insert(1, "country", row.country_name)
         df["detected_language"] = lang
+        df["text_model"] = text_name
+        df = _add_text_en(df, translate, lang)
         df.to_csv(path, index=False)
         frames.append(df)
         minutes = len(signal) / SR / 60
-        log(f"  [{i}/{len(corpus)}] {row.speech_id} {row.country_name}: {len(df)} passages,"
-            f" {minutes:.0f} min of audio | download {t1 - t0:.0f}s, transcribe {t2 - t1:.0f}s,"
-            f" score {time.time() - t2:.0f}s")
+        extra = f", {dropped[0]} English (President) passages dropped" if keep is not None else ""
+        log(f"  [{i}/{len(corpus)}] {row.speech_id} {row.country_name} ({lang}): {len(df)} passages"
+            f"{extra}, {minutes:.0f} min of audio | download {t1 - t0:.0f}s, transcribe"
+            f" {t2 - t1:.0f}s, score {time.time() - t2:.0f}s")
     if skipped:
         pd.DataFrame(skipped).to_csv(OUT / "skipped.csv", index=False)
-        log(f"  skipped {len(skipped)} speeches not in English (results/audio/skipped.csv)")
+        log(f"  skipped {len(skipped)} speeches ({OUT.relative_to(ROOT)}/skipped.csv)")
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
@@ -421,8 +562,10 @@ def process(corpus, transcribe, voice, text, redo=False, log=print):
 
 def add_z_and_issues(passages):
     z = zscore_within(passages, MEASURES).add_prefix("z_")
+    english = (passages["text_en"].fillna(passages["text"]) if "text_en" in passages
+               else passages["text"])
     return pd.concat([passages.reset_index(drop=True), z.reset_index(drop=True),
-                      issue_tags(passages["text"])], axis=1)
+                      issue_tags(english)], axis=1)
 
 
 def correlations(passages):
@@ -469,6 +612,15 @@ def speech_summary(passages):
     """Average raw tone per speech, joined to the country's 2025 votes."""
     s = passages.groupby(["speech_id", "country"])[MEASURES].mean().reset_index()
     s["n_passages"] = passages.groupby("speech_id").size().reindex(s["speech_id"]).to_numpy()
+    lang = (passages.groupby("speech_id")["detected_language"].agg(lambda x: x.mode().iat[0])
+            if "detected_language" in passages else pd.Series(dtype=object))
+    s["language"] = s["speech_id"].map(lang).fillna("en")
+    # Words per second differ by language, so also standardise speaking rate among speeches
+    # in the same language (languages with fewer than 3 speeches get NaN).
+    g = s.groupby("language")["speech_rate"]
+    big = g.transform("size") >= 3
+    s["speech_rate_in_lang"] = ((s["speech_rate"] - g.transform("mean"))
+                                / g.transform("std").replace(0, np.nan)).where(big)
     votes = pd.concat([load_split("test")[1], load_split("test_heldout")[1]])
     votes = votes[votes["session"] == SESSION]
     contested = votes[votes["contested"]]
@@ -479,11 +631,19 @@ def speech_summary(passages):
 
 
 def tone_vs_votes(speeches):
+    """Spearman correlation of each speech-level measure with dissent, for all speeches
+    and for English-delivered speeches alone."""
+    groups = {"all": speeches}
+    if "language" in speeches and (speeches["language"] != "en").any():
+        groups["english_only"] = speeches[speeches["language"] == "en"]
+    measures = MEASURES + (["speech_rate_in_lang"] if "speech_rate_in_lang" in speeches else [])
     rows = []
-    for col in MEASURES:
-        ok = speeches[[col, "dissent_contested"]].dropna()
-        rows.append({"measure": col, "spearman_with_dissent":
-                     ok[col].corr(ok["dissent_contested"], method="spearman"), "n_countries": len(ok)})
+    for group, d in groups.items():
+        for col in measures:
+            ok = d[[col, "dissent_contested"]].dropna()
+            rows.append({"speeches": group, "measure": col, "spearman_with_dissent":
+                         ok[col].corr(ok["dissent_contested"], method="spearman"),
+                         "n_countries": len(ok)})
     return pd.DataFrame(rows)
 
 
@@ -566,6 +726,8 @@ def plot_tone_vs_votes(speeches, path, measure="arousal", n_labels=6):
 
 def analyze(passages, log=print):
     chair = is_chair(passages["text"])
+    if "text_en" in passages:  # non-English speeches: the introduction shows up in translation
+        chair = chair | is_chair(passages["text_en"].fillna(""))
     log(f"dropped {chair.sum()} passages spoken by the Assembly President")
     passages = add_z_and_issues(passages[~chair].reset_index(drop=True))
     speeches = speech_summary(passages)
@@ -579,6 +741,8 @@ def analyze(passages, log=print):
     plot_tone_vs_votes(speeches, OUT / "arousal_vs_dissent.png")
 
     log(f"\n{len(speeches)} speeches, {len(passages)} passages")
+    log("speeches by language: " + ", ".join(f"{k} {v}" for k, v in
+                                             speeches["language"].value_counts().items()))
     log("\nText sentiment vs voice, within speech:")
     log(outputs["correlations"].round(3).to_string(index=False))
     log("\nTone vs dissent on contested votes (descriptive):")
@@ -594,34 +758,53 @@ def analyze_cached():
     return analyze(passages)
 
 
-def main(limit=None, whisper_model=WHISPER_MODEL, device="cpu", redo=False):
-    """`device` is used for all three models (Whisper falls back to cpu if it must)."""
+def set_mode(languages):
+    """Point OUT at the output folder for this mode ("all" or "en")."""
+    global OUT
+    OUT = OUT_EN if languages == "en" else OUT_ALL
     OUT.mkdir(parents=True, exist_ok=True)
+
+
+def main(limit=None, whisper_model=None, device="cpu", redo=False, languages="all"):
+    """`device` is used for all three models (Whisper falls back to cpu if it must)."""
+    english_only = languages == "en"
+    set_mode(languages)
+    whisper_model = whisper_model or (WHISPER_MODEL_EN if english_only else WHISPER_MODEL)
     corpus = load_corpus()
     known = set(pd.concat([load_split("test")[0], load_split("test_heldout")[0]])["speech_id"])
-    english = corpus[corpus["english"] & corpus["speech_id"].isin(known)
-                     & corpus["audio_floor"].notna()]
-    print(f"{len(corpus)} speeches in the corpus, {corpus['english'].sum()} delivered in English,"
-          f" {len(english)} with votes in our data")
+    usable = corpus[corpus["speech_id"].isin(known) & corpus["audio_floor"].notna()]
+    chosen = usable[usable["english"]] if english_only else usable
+    print(f"{len(corpus)} speeches in the corpus, {corpus['english'].sum()} labelled English;"
+          f" using {len(chosen)} ({'English only' if english_only else 'all languages'})"
+          f" with audio and votes in our data")
     if limit:
-        english = english.head(limit)
+        chosen = chosen.head(limit)
     print("loading models (first run downloads them)")
-    passages = process(english, Whisper(whisper_model, device), VoiceEmotion(device=device),
-                       TextSentiment(device=device), redo=redo)
+    passages = process(chosen, Whisper(whisper_model, device, english_only=english_only),
+                       VoiceEmotion(device=device),
+                       TextSentiment(TEXT_MODEL_EN if english_only else TEXT_MODEL, device=device),
+                       redo=redo, english_only=english_only,
+                       reuse=None if english_only else OUT_EN / "passages",
+                       translate=None if english_only else Translator(device=device))
     return analyze(passages)
 
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--limit", type=int, help="only the first N English-delivered speeches")
-    p.add_argument("--whisper-model", default=WHISPER_MODEL,
-                   help="faster-whisper model, e.g. small.en (default), medium.en")
+    p.add_argument("--languages", choices=["all", "en"], default="all",
+                   help="all: every speech in its own language (default, results/audio_all/);"
+                        " en: English-delivered speeches only (results/audio/)")
+    p.add_argument("--limit", type=int, help="only the first N speeches")
+    p.add_argument("--whisper-model", default=None,
+                   help=f"faster-whisper model (default {WHISPER_MODEL}; {WHISPER_MODEL_EN} with"
+                        " --languages en), e.g. medium")
     p.add_argument("--device", default="cpu", help="cpu or mps (Apple silicon) for all models")
     p.add_argument("--redo", action="store_true", help="recompute cached speeches")
     p.add_argument("--analyze-only", action="store_true",
                    help="skip audio processing; rerun the analysis on cached speeches")
     a = p.parse_args()
     if a.analyze_only:
+        set_mode(a.languages)
         analyze_cached()
     else:
-        main(a.limit, a.whisper_model, a.device, a.redo)
+        main(a.limit, a.whisper_model, a.device, a.redo, a.languages)

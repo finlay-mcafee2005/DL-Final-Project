@@ -161,16 +161,42 @@ The bar to clear is "last session's vote," not random guessing.
 
 ## Audio case study: tone of voice vs. words
 
-`audio_tone.py` asks whether leaders *sound* the way their words *read*, using the [UN transcription corpus](https://huggingface.co/datasets/united-nations/transcription-corpus) (CC BY 4.0). It has floor audio, the speaker's own voice, for the 2025 General Debate only.
+Do leaders *sound* the way their words *read*, and does tone of voice relate to how a country votes? The audio is the UN's **floor recording**, the speaker's own voice rather than an interpreter's.
 
-**Method.** A small multilingual Whisper model checks the language on three clips from inside each speech; 24 of the 98 speeches labelled English turned out not to be, leaving **74 speeches**. Whisper (`small.en`) transcribes each one into 5–20 second passages. Each passage gets text sentiment ([`cardiffnlp/twitter-roberta-base-sentiment-latest`](https://huggingface.co/cardiffnlp/twitter-roberta-base-sentiment-latest)), vocal arousal, dominance and valence ([`audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim`](https://huggingface.co/audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim)), and pitch, loudness, pauses and speaking rate. Passages spoken by the Assembly President are removed (98 of them, leaving 6,663), and every measure is standardised within its speech.
+### Data
 
-**Findings.**
-- The intensity of the voice is nearly unrelated to the sentiment of the words: arousal r = 0.06, dominance 0.05; pitch, loudness and pace are all within ±0.05.
-- Only vocal valence tracks the words (r = 0.62), and the valence model partly reads the words itself, so this overstates the agreement.
-- Tone barely relates to votes. Speaking rate vs. share of No/Abstain on contested 2025 resolutions gives ρ = 0.30 across countries, which is not significant after correcting for nine tests.
+| Years | Source | Speeches |
+|---|---|---|
+| 2015–2025 | UN floor recordings (one per speech) | 2,086 |
+| 2013–2014 | No floor track; the UN channel in the speaker's own language carries the original voice. The language is taken from what the country's leader used in 2015–2017 (English, French, Spanish, Arabic, Russian or Chinese); speeches in other languages are skipped | 309 |
+| **Total** | **193 countries, 13 sessions** | **2,395** |
 
-The corpus also holds 14 Security Council meetings, which are not used because they do not correspond to General Assembly votes.
+Before 2013 there is no usable per-speech audio: 2012 videos carry the English interpretation, and earlier years are RealPlayer streams or whole-meeting recordings. The 2025 General Debate is also studied passage by passage (187 speeches, 15,448 passages) from the [UN transcription corpus](https://huggingface.co/datasets/united-nations/transcription-corpus) (CC BY 4.0).
+
+### Method
+
+- **Voice:** arousal, dominance and valence ([`audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim`](https://huggingface.co/audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim)) over 24 sampled 10-second windows; pitch level and variation, loudness and share of pauses over the whole speech. The first 30 s and last 20 s are dropped (the Assembly President's introduction and thanks).
+- **Speaking rate:** Whisper (`large-v3-turbo`) transcribes 6 evenly spaced 30-second clips; words per second, standardised within each language, because rates are not comparable across languages.
+- **Text sentiment:** [`cardiffnlp/twitter-roberta-base-sentiment-latest`](https://huggingface.co/cardiffnlp/twitter-roberta-base-sentiment-latest) on the official English text, so every speech is scored the same way.
+- **Votes:** each country's share of No and Abstain votes on contested resolutions in the same session (dissent).
+- **Analysis:** Spearman correlations with every measure standardised within its session, pooled over all sessions with 95% confidence intervals from a bootstrap that resamples countries; also per session, on each country's average, and within country (a country's deviations from its own average).
+- **Data checks:** Whisper's detected language was checked against each country's plausible languages ([`country_languages.json`](country_languages.json)); 90 speeches (4%) were re-detected with the larger model. Speaking rate is excluded for 24 speeches: Thai, Lao, Khmer and Burmese (written without word spaces) and rates under 0.5 words per second, where transcription failed.
+
+### Findings (2,395 speeches)
+
+| Measure vs. dissent | Pooled ρ (95% CI) | Country averages | Within country |
+|---|---|---|---|
+| Text sentiment | **−0.13 (−0.22 to −0.04)** | −0.17 (p = 0.02) | +0.04 (p = 0.06) |
+| Speaking rate (within language) | +0.07 (0.00 to 0.15) | +0.07 (p = 0.35) | −0.01 |
+| Arousal, dominance, valence, pitch, loudness, pauses | −0.07 to +0.05, all CIs include 0 | all p > 0.1 | all ≈ 0 |
+
+1. **Words relate to votes.** Countries whose speeches are more negative dissent more on contested resolutions. The correlation is negative in every one of the 13 sessions (from −0.28 in 2024 to −0.003 in 2019), but it separates countries rather than years: a country's change in tone from one year to the next does not track its votes.
+2. **Tone of voice adds nothing.** None of the six voice measures relates to voting. In the 2025 passage-level study the voice's intensity is also unrelated to the sentiment of the words (arousal r = 0.02); only vocal valence tracks them (r = 0.40), partly because the valence model reads the words itself.
+3. **Speaking rate is a recent and weak pattern.** Faster speakers dissent slightly more, but only from 2020: ρ is between −0.13 and +0.06 in 2013–2019 and positive every year from 2020 (0.09 to 0.28). 2020 also changed how speeches were recorded (pre-recorded videos during COVID-19), so this is an observed pattern, not an explanation.
+
+Adding 2013–2014 and fixing the detected languages each moved the results by less than 0.02, so neither choice drives the conclusions.
+
+**Limitations.** The voice model was trained on English speech, so its scores are less reliable for other languages. The 2013–2014 channels rest on an assumption about each country's language; a different leader may have spoken another one. Whisper transcribes less common languages less accurately. All results are correlations within one kind of speech.
 
 ---
 
@@ -183,10 +209,13 @@ The corpus also holds 14 Security Council meetings, which are not used because t
 | `comparison.py` | Classical baselines |
 | `un_contrastive.py` | Stage 1 and Stage 2 experiment functions, training loops, multi-seed runs and logging |
 | `plots.py` | Report figures from `results/` into `report/figures/` (PNG and PDF) |
-| `audio_tone.py` | Audio case study: tone of voice vs. text sentiment, 2025 General Debate |
+| `audio_tone.py` | Audio case study, passage level: tone of voice vs. text sentiment in the 2025 General Debate (all 187 speeches, every language) |
+| `balance_passages.py` | Balanced sample of the 2025 passages: equal numbers per issue and per country |
+| `audio_sessions.py` | Audio case study, speech level: tone of voice vs. votes for every usable recording, 2013–2025 (2,395 speeches) |
+| `country_languages.json` | Languages plausible for each country (UN languages + widely spoken national ones, from CLDR), used to check Whisper's language detection |
 | `test_un.py` | 45 tests: data integrity, no time or country leakage, embeddings, metrics, model shapes, training loops, figures, audio pipeline |
 | `data/` | Raw speeches and votes (tracked). `data/processed/`, `data/embeddings/` and `data/audio/` are generated and not tracked |
-| `results/` | Generated, not tracked: `baselines.csv`, `summary.csv` (Stage 2), `retrieval.csv` (Stage 1), `by_issue.csv`, one per-epoch history CSV per experiment, and `audio/` |
+| `results/` | Generated, not tracked: `baselines.csv`, `summary.csv` (Stage 2), `retrieval.csv` (Stage 1), `by_issue.csv`, one per-epoch history CSV per experiment, and `audio/`, `audio_all/`, `audio_sessions/` |
 | `report/figures/` | The four figures above |
 
 ---
@@ -216,16 +245,27 @@ uv run pytest test_un.py -v
 | `un_contrastive.py --seeds 5` | Runs every experiment 5 times; `--experiment <name>` runs one | ~40 min |
 | `plots.py` | Draws the figures | seconds |
 
-The audio study needs extra packages and downloads about 2 GB of models plus the audio:
+The audio study needs extra packages and downloads about 2 GB of models plus the audio. Every run resumes where it left off if stopped.
 
 ```bash
 uv sync --extra audio
-uv run python audio_tone.py --limit 3 --device mps
-caffeinate -i uv run python audio_tone.py --device mps
-uv run python audio_tone.py --analyze-only
+
+# 2025, passage by passage (about 6 hours), then a balanced sample of passages
+caffeinate -i uv run python audio_tone.py --device mps --whisper-model large-v3-turbo
+uv run python balance_passages.py --n 1000
+
+# 2015-2025, speech by speech (about 30 s per speech; --shard 1/3 splits it across machines)
+caffeinate -i uv run python audio_sessions.py --device mps
+uv run python audio_sessions.py --device mps --fix-languages   # re-detect implausible languages
+
+# 2013-2014 through the speaker's language channel
+uv run python audio_sessions.py --plan-old
+caffeinate -i uv run python audio_sessions.py --sessions 68-69 --device mps
+
+uv run python audio_sessions.py --analyze-only                 # rerun the analysis in seconds
 ```
 
-The first command checks the setup on 3 speeches; the full run takes about 3 hours and resumes where it left off if stopped; `--analyze-only` reruns the analysis on saved results in seconds.
+`--languages en` on `audio_tone.py` reruns the original English-only 2025 study (74 speeches).
 
 ---
 
